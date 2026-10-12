@@ -1,15 +1,10 @@
-# UsbNetFix — stop the Windows "Network N+1" problem
+# UsbNetFix
 
-[简体中文](README.md) | **English**
+**Stop Windows from inventing "Network 2", "Network 3", ... every time you enable Android USB tethering.**
 
-> When you enable USB tethering on an Android phone, Windows creates yet another network
-> profile: `Network`, `Network 2`, `Network 3`, ... Every tethering session adds one more.
-> The usual advice is "do a network reset", which wipes **all** your saved Wi-Fi profiles.
->
-> UsbNetFix names each tethering profile **after the phone that created it** and cleans up
-> that phone's own leftovers. The list stops growing, and your Wi-Fi profiles are untouched.
->
-> **Install location**: `%UsbNetFixHome%`  **Entry point**: double-click `UsbNetFix.cmd`
+Windows identifies a network by its default gateway MAC address, and Android re-randomizes that MAC on every tethering session — so Windows believes it found a brand new network and stores another profile, named `Network` / `Network N`. The usual advice is "do a network reset", which wipes **all** your saved Wi-Fi profiles.
+
+UsbNetFix renames the profile to the phone's own name (e.g. `Pixel 8`) the moment Windows creates it, and removes that phone's own leftovers.
 
 ```
 before                                  after
@@ -20,162 +15,51 @@ before                                  after
   OfficeNet      2026-04-15
 ```
 
-Three phones work side by side, each tracked independently by USB serial number.
+- ✅ Your Wi-Fi profiles are **never** lost and **never** modified
+- ✅ Multiple phones are tracked independently
+- ✅ **Runs only when something happens** — event driven, no polling, no resident process
+- ✅ Pure PowerShell: no drivers, no system-wide hooks
 
 ---
 
-## 1. The actual root cause
+## Install
 
-Windows identifies a network by a **signature** whose decisive attribute is the
-**default gateway MAC address**, stored next to every saved profile:
+1. Download or clone this repository
+2. **Double-click `UsbNetFix.cmd`** → choose `5` → approve the UAC prompt
 
-```
-HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\NetworkList\Signatures\Unmanaged\<SIGNATURE>
-        DefaultGatewayMac = <6 bytes>
-```
+Done. That registers one scheduled task (triggers on phone plug-in and on boot).
 
-Verified on the development machine — two consecutive tethering sessions from the *same*
-phone produced two different fingerprints:
+> Administrator rights are required (the saved-network database lives under `HKLM`).
+> To install into a dedicated folder instead: `powershell -ExecutionPolicy Bypass -File deploy.ps1`
 
-| saved network | created | gateway MAC |
-|---|---|---|
-| `Network` | 2026-10-09 | `70-3A-A6-AA-30-02` |
-| `Network 2` | 2026-10-09 | `68-4A-AE-37-1C-F1` |
+## Daily use
 
-Android **re-randomizes the RNDIS adapter MAC on every tethering session**. Windows sees a
-new gateway MAC, concludes this is a brand-new network, and stores another profile. The name
-is auto-generated because the connection looks "ethernet-like" (`NameType = 6`) with no DHCP
-domain name, so Windows falls back to `Network` / `Network N`.
+**Nothing.** Plug in the phone, enable USB tethering, and within a few seconds the network is named after that phone.
 
-Two consequences worth knowing:
-
-* **It cannot be prevented, only taken over.** The signature's last 64 hex characters are a
-  private hash of the fingerprint. None of the documented candidates (SHA-256/SHA-1 over the
-  MAC in various formats, GUID combinations — ~157 variants tested) reproduce it, so a
-  profile cannot be pre-seeded in the registry. What *does* work is renaming the profile the
-  moment Windows creates it: that registry write is picked up by NLA and by the Settings UI
-  **immediately**, with no service restart (verified on Windows 11 22631).
-* **The gateway MAC is the phone itself.** During a session the gateway MAC equals the
-  phone's RNDIS adapter MAC. That is what this tool uses to confirm "this really is a phone"
-  instead of guessing from how the MAC looks.
-
-The same applies to an ordinary wired network: Windows names it `Network N` for exactly the
-same reason. Such a profile is **never** touched by this tool.
-
----
-
-## 2. Requirements
-
-* Windows 10 / 11 (developed and verified on Windows 11 22631)
-* Windows PowerShell 5.1 (built in — nothing to install)
-* Administrator rights (the saved-network database lives under `HKLM`)
-* An Android phone with USB tethering
-
----
-
-## 3. Install and daily use
-
-### Install
-
-1. Download / clone this repository.
-2. Double-click **`UsbNetFix.cmd`** → choose **5 (install)** → approve the UAC prompt.
-
-That registers one scheduled task (running as SYSTEM) and performs a self test. The folder
-you run it from becomes the install folder.
-
-To publish a copy into a dedicated folder instead:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File deploy.ps1
-```
-
-`deploy.ps1` is **one way only**: it copies the scripts into `%UsbNetFixHome%`, or
-`%LOCALAPPDATA%\UsbNetFix` when that variable is unset, backs up whatever was there before,
-verifies every file by hash, re-registers the task against the new location and prints the
-runner path it registered.
-
-> `%LOCALAPPDATA%` is the default install root because it is writable **without** elevation,
-> so the control panel can write its `log\` and `state.json` normally, while the SYSTEM task
-> can still reach it. `%ProgramFiles%` would require an elevated control panel for those writes.
->
-> The install path is always passed to `tasks.ps1` explicitly. A relative `%LOCALAPPDATA%` is
-> never resolved inside the task, because the task runs as SYSTEM — whose `%LOCALAPPDATA%` is
-> a different folder.
-
-### Daily use
-
-Nothing. Plug in the phone and enable USB tethering — within a few seconds the network is
-renamed after that phone.
-
-### Control panel
+Double-click `UsbNetFix.cmd` when you want to look at something:
 
 | Menu | What it does |
 |---|---|
-| `1 status` | devices, saved profiles, live networks, task state, log tail |
-| `2 names` | **which phone would get which name, and why** (USB serial, model, decision source) |
-| `3 monitor` | live tethering state + which USB modes the phone currently exposes |
-| `4 apply` | run the fixer right now |
-| `5 install` | deploy + register the scheduled task |
-| `6 diagnose` | write a full diagnostic snapshot |
-| `7 / 8` | edit `config.json` / open the log folder |
-| `9 uninstall` | remove the scheduled task |
+| `1 status` | current state: devices, profiles, task, log tail |
+| `2 names` | **which name the attached phone gets, and why** |
+| `3 monitor` | live tethering state + which USB modes the phone exposes |
+| `4 apply` | run the fix right now |
+| `5 install` | install / repair |
+| `6 diagnose` | write a diagnostic snapshot (for bug reports) |
+| `7` / `8` | edit config / open the log folder |
+| `9 uninstall` | uninstall |
 
-Command line works too: `UsbNetFix.cmd status`, `UsbNetFix.cmd names`, `UsbNetFix.cmd monitor`, ...
+Command line works too: `UsbNetFix.cmd status`, `UsbNetFix.cmd names`, `UsbNetFix.cmd monitor`
 
-### Self check
+## Switching phones / multiple phones
 
-`verify-release.ps1` runs seven checks: script syntax, ASCII purity, leftover personal data,
-absence of runtime data, `config.json` validity, a real run of the entry points, and a final
-sweep that also removes anything the tests created.
-
----
-
-## 4. How a phone is identified, and named
-
-No guessing, no heuristics like "this MAC looks random":
-
-| Step | Information used | Notes |
-|---|---|---|
-| 1 | **USB vendor id** | e.g. `2D95` (vivo/iQOO), `2717` (Xiaomi), `18D1` (Google), `04E8` (Samsung) — configurable list |
-| 2 | **Real parent device** (`DEVPKEY_Device_Parent`) | the adapter's network GUID is resolved to its USB instance, then up to the parent, which carries the **USB serial number** |
-| 3 | **Model name** | Android reports its marketing name only in **MTP (file transfer) mode**; that record is a sibling interface sharing the same parent serial, so it can be matched exactly |
-| 4 | **Gateway MAC** | confirms "this session is that phone". Only confirmed MACs are ever acted on |
-
-> **Why not the USB port?** Two different phones plugged into the *same* USB port share the
-> same `LocationInformation` — during development this caused one phone to be named after the
-> other. The serial number is the primary key; the port is only a last resort, and only when
-> exactly one device there reports a model.
-
-Name resolution order:
-
-```
-DeviceRules in config.json   (match Vid / ModelLike / SerialLike -> your own name)
-        |
-        v  no rule matched
-name learned earlier for this same device (state.json)
-        |
-        v  not seen before
-the model name the phone reports over USB        e.g. "Pixel 8"
-        |
-        v  phone never reported a model
-DefaultName                                      e.g. "USB Tethering"
-```
-
-`Network N` can never be produced. If two phones would receive the same name, the second one
-gets a ` 2` suffix so Windows never starts numbering again.
-
-### What happens when you switch phones
+**Just plug them in.** Devices are told apart by USB serial number, so each gets its own name.
 
 | Situation | Result |
 |---|---|
-| The phone has been connected in MTP mode at least once | named after its model, e.g. `Pixel 8` |
-| The phone never reported a model | `DefaultName` is used; connect it once in **file transfer** mode and the model is remembered |
+| The phone has been connected in "File transfer" (MTP) mode at least once | named after its model, e.g. `Pixel 8` |
+| The phone never reported a model | starts as `USB Tethering`; switch its USB mode to "File transfer" once and the model is remembered |
 | You want a fixed custom name | add a rule to `config.json` (below) |
-
-### Using several phones
-
-Just plug them in — each is tracked separately by USB serial number, each gets its own
-profile, and switching phones does not disturb the others. To pin a custom name:
 
 ```json
 "DeviceRules": [
@@ -184,202 +68,52 @@ profile, and switching phones does not disturb the others. To pin a custom name:
 ]
 ```
 
-* `ModelLike` — regex against the model name the phone reports (`+` etc. must be escaped: `\+`)
-* `SerialLike` — regex against the USB serial number (use this when you have several phones of
-  the same model)
-* Find a phone's serial with `UsbNetFix.cmd names`, or from `DeviceId` in `state.json`
+- `ModelLike` — regex against the model name the phone reports (escape `+` as `\+`)
+- `SerialLike` — regex against the USB serial number (use it when you own several phones of the same model)
+- Find a serial with `UsbNetFix.cmd names`
 
-> Give every phone a **different** `Name`. Two phones sharing one name look like leftovers of
-> each other and get cleaned up.
+> ⚠️ Give every phone a **different** name. Two phones sharing one name look like leftovers of each other and get cleaned up.
 
----
+## Configuration (`config.json`)
 
-## 5. About "tethering blocks file transfer"
-
-Yes — on Android these two are mutually exclusive, and the USB descriptors show why:
-
-| phone USB mode | product id | interfaces Windows sees |
-|---|---|---|
-| **USB tethering** | `PID_600A` | only `MI_00` = RNDIS network adapter |
-| **File transfer (MTP)** | `PID_6012` | `MI_00` = MTP, `MI_01` = mass storage |
-
-Android enables exactly **one** USB configuration at a time, so while tethering is on the MTP
-interface is not enumerated at all and the phone's storage does not appear in Explorer.
-
-Workarounds, easiest first:
-
-1. **Wireless transfer** — WeChat/QQ file helper, LocalSend, Feem: tethering stays on
-2. **Switch the phone's USB mode** to "File transfer", copy, then switch back (drops the
-   network for a few seconds)
-3. **`adb push` / `adb pull`** — USB debugging is a different interface, so it can coexist;
-   needs a driver and is slower than MTP
-4. **Cloud storage** over the shared connection
-
----
-
-## 6. Configuration (`config.json`)
+The ones you are likely to touch:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `DeviceRules` | `[]` | per-device name overrides (see above) |
-| `AutoNameFromModel` | `true` | name unknown phones after their own model name |
-| `NamePrefix` | `""` | optional prefix, e.g. `"USB: "` |
-| `DefaultName` | `USB Tethering` | used when the phone never reported a model |
-| `Category` | `Private` | `Private` \| `Public` \| `Keep`. Private enables file sharing / discovery on that network |
+| `DeviceRules` | `[]` | custom naming rules (see above) |
+| `Category` | `Private` | network type: `Private` (file sharing allowed) / `Public` / `Keep` (do not change) |
+| `DefaultName` | `USB Tethering` | used when no model name is available |
 | `SettleSeconds` | `8` | wait for Windows to finalize the profile before renaming |
-| `ProfileWaitSeconds` | `30` | how long to wait for Windows to assign a profile after the adapter appears |
-| `MergeDuplicateProfiles` | `true` | fold that phone's own leftover profiles together |
-| `ForgetLegacyProfiles` | `true` | delete that phone's leftovers instead of only renaming |
-| `VendorIds` | common list | USB vendor ids recognised as "phones" |
-| `DescriptionPatterns` | `Remote NDIS`, ... | interface-description fallback |
-| `LogMaxKB` | `768` | log rotation threshold |
-| `LogKeepDiagFiles` / `LogKeepDiagDays` | `20` / `30` | pruning of diagnostic snapshots |
+| `ForgetLegacyProfiles` | `true` | delete that phone's own leftover profiles |
 | `Verbose` | `false` | verbose debug logging |
 
----
-
-## 7. Architecture: event driven, zero polling
-
-One scheduled task, `UsbNetFix-OnPhonePlug`, with four triggers:
-
-| Trigger | Fires when |
-|---|---|
-| **Kernel-PnP EventID 410 / 400** | a USB device is started/configured (the phone's RNDIS adapter appears) |
-| **NetworkProfile EventID 10000-10002** | Windows creates / changes / deletes a network profile |
-| **BootTrigger** (30 s delay) | after every boot — safety net |
-| **CalendarTrigger** (once a day) | last resort if an event was missed |
-
-Each run is a short-lived process: it inspects the current state, fixes what needs fixing and
-exits. **When nothing happens, nothing runs.** Measured on the development machine:
-
-| Situation | Time | Notes |
-|---|---|---|
-| No phone attached | **0.52 s** | exits before any wait, writes no log line |
-| Phone attached | **9.5 s** | 8 s of that is the deliberate settle wait |
-| Peak memory | ~180 MB working set | PowerShell interpreter baseline, released on exit |
-| CPU while idle | **0** | no polling, no resident process |
-
-The Kernel-PnP trigger cannot be narrowed to a specific device: Windows event queries accept
-only *equality* on `EventData` (`contains()` is rejected with "The specified query is
-invalid"), and the USB instance path changes with the port. So other USB devices trigger a run
-too — it just exits in half a second. The NetworkProfile trigger is the safety net for phones
-Windows re-enumerates without a PnP event (observed in practice: the PnP log showed no new
-entry while the network event fired and did the job).
-
-> Why no resident daemon: a long-lived watcher process was repeatedly reclaimed by the host
-> environment during development. Short-lived processes plus event triggers proved far more
-> reliable, and cost nothing while idle.
-
----
-
-## 8. Safety
-
-* **Only confirmed phone profiles are ever modified.** A profile is acted on only when its
-  gateway MAC was learned during a real tethering session. Wi-Fi/Ethernet profiles are never
-  candidates — not even ones whose MAC happens to look randomized.
-* **The online profile is never deleted.** Hard rule, checked twice.
-* **No deletion when the online profile cannot be determined.** `-MergeOnly`, or "adapter up
-  but no profile yet", skip cleanup entirely rather than guess.
-* **A `.reg` backup is taken before any cleanup.** `backup\Profiles-*.reg` +
-  `Signatures-*.reg` restore the whole saved-network database.
-* **No service, no driver, no resident process.** Nothing to interfere with boot/shutdown;
-  `WakeToRun=false` so the machine is never woken up.
-* **Nothing is installed system-wide.** One scheduled task, plus files in the app folder.
-
-Verified on the development machine:
-
-| Check | Result |
-|---|---|
-| Rename takes effect immediately | ✅ no service restart needed |
-| Delete → restore from `.reg` backup | ✅ full round trip |
-| Real Wi-Fi profiles | ✅ untouched across hundreds of tethering sessions |
-| Survives a reboot | ✅ task fired 33 s after boot, `result=0x0` |
-| Multiple phones | ✅ three phones tracked independently, profile count stable |
-| Corrupted name self-heals | ✅ renamed to `Network 99`, corrected on the next run |
-
----
-
-## 9. Rollback
-
-```powershell
-# elevated PowerShell
-$dir = Join-Path $env:UsbNetFixHome 'backup'   # or wherever you installed it
-reg import (Join-Path $dir 'Profiles-<timestamp>.reg')
-reg import (Join-Path $dir 'Signatures-<timestamp>.reg')
-```
-
-### Uninstall
+## Uninstall
 
 ```powershell
 .\UsbNetFix.cmd uninstall        # interactive
-.\uninstall.ps1 -Purge           # also delete the app folder
-.\uninstall.ps1 -CleanProfiles   # also remove leftover phone profiles (keeps one)
+.\uninstall.ps1 -Purge           # also delete the program files
 ```
 
----
+## Known limits
 
-## 10. Known limits
+1. **The model name requires one "File transfer" connection**, otherwise the default name is used at first.
+2. **Windows still stores one profile per tethering session** — the tool renames it and removes that phone's older leftovers, so the list you see does not grow.
+3. **The MAC randomization cannot be stopped** (unrooted Android does not allow changing the RNDIS MAC). This tool takes over the profile instead of preventing it, which is equivalent in practice.
 
-1. **The model name needs one MTP connection.** A brand-new phone may show up as
-   `USB Tethering` the first time; switching its USB mode to "File transfer" once makes the
-   name permanent.
-2. **Windows still stores one profile per tethering session** — the tool renames it and
-   removes that phone's older leftovers, so the visible list does not grow, but a new profile
-   entry is still created underneath.
-3. **The MAC randomization itself cannot be stopped** from Windows, and unrooted Android does
-   not allow changing the RNDIS MAC. This tool takes over the profile instead of preventing it,
-   which is functionally equivalent.
-4. If a phone never reports a model and has no `DeviceRules` entry, `DefaultName` is used.
+## More documentation
 
----
-
-## 11. Files
-
-| File | Purpose |
+| Document | Contents |
 |---|---|
-| `UsbNetFix.cmd` / `UsbNetFix.ps1` | control panel / CLI |
-| `usbnet-fix.ps1` | the fixer; run by the scheduled task (`-Once`, `-DryRun`, `-MergeOnly`, `-Loop`) |
-| `netprof-lib.ps1` | registry + device-identity layer |
-| `tasks.ps1` | registers the scheduled task |
-| `deploy.ps1` | one-way deploy of a changed source tree into an install folder |
-| `uninstall.ps1` | removes the task (and optionally everything else) |
-| `diag-watcher.ps1` | read-only diagnostic snapshot |
-| `verify-release.ps1` | self check (7 checks) |
-| `config.json` | settings |
-| `state.json` | learned phones and confirmed fingerprints (created at runtime) |
-| `log\`, `backup\` | runtime data (created at runtime) |
-
----
-
-## 12. Development notes and pitfalls
-
-These cost real debugging time; they are listed so nobody repeats them.
-
-| Pitfall | Symptom | Fix |
-|---|---|---|
-| `Profiles\{GUID}` has **no** `Signature` value | the whole lookup chain silently found nothing | the link is the other way round: `Signatures\*\ProfileGuid` points at the profile |
-| `DateCreated` is not a FILETIME | dates parse as empty | it is a 16-byte `SYSTEMTIME` (8 little-endian WORDs) |
-| Trusting "the MAC looks randomized" | real routers use locally-administered MACs too — that would rename the user's Wi-Fi | only act on fingerprints confirmed during a real phone session |
-| `reg.exe export` needs a hive-qualified key | backup silently produced 0 files | prefix with `HKLM\` |
-| Windows PowerShell 5.1 reads BOM-less `.ps1` as ANSI | non-ASCII literals break the parser (`$var:` inside strings, unterminated strings) | keep scripts pure ASCII; put non-ASCII in JSON |
-| `Global\` mutex from an elevated process | `Access denied`, single-instance guard silently disabled | use the `Local\` namespace |
-| Deriving the parent device name syntactically | broke for interface instances shaped like `6&1A2B3C&1&0000` | ask the device tree (`DEVPKEY_Device_Parent`) |
-| The USB interface's last path segment | treated as a "serial", but it is a port path that changes per port | take the serial from the parent device |
-| Matching phones by USB port | two phones on the same port resolved to the same model | match by USB serial number |
-| Registering an event trigger from a CIM object | `Register-ScheduledTask` "succeeded" but no task appeared | define the task as raw XML |
-| `EventData` filters in event queries | `The specified query is invalid` | only equality is supported; filter in the script instead |
-| An empty string in `config.json` | `"LogFile": ""` was treated as a valid path → logging silently off | treat blank as "not configured" |
-| `.cmd` written as UTF-8 | cmd.exe read it as ANSI, ate a line break, and every word became a command | save `.cmd` as ANSI/ASCII |
-| Copying files by hand during development | an older build overwrote a newer one; the task pointed at a folder with no script (`0xFFFD0000`, silently doing nothing) | one-way `deploy.ps1` that verifies hashes and prints the runner path |
-| A per-minute polling task | 1440 runs a day, each one pointless | replaced by USB / network-profile events plus a boot and a daily safety net |
-| Waiting 8 s before checking whether a phone is attached | wasted time on almost every run | pre-check first, exit immediately when there is nothing to do |
-| A verification script that runs the tool | the tool writes a log containing the phone's real model and serial | point the test at a temporary log location and rescan everything afterwards |
-
----
+| [docs/technical.md](docs/technical.md) | root cause, identification logic, event-driven architecture, measured resource usage |
+| [docs/safety.md](docs/safety.md) | safety model, verification records, rollback |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | troubleshooting and development pitfalls |
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
 
-Not affiliated with Google, vivo, Xiaomi, Samsung or Microsoft. It only edits Windows' own
-saved-network database; no drivers, no system-wide hooks.
+Not affiliated with Google, vivo, Xiaomi, Samsung or Microsoft. It only edits Windows' own saved-network database; no drivers, no system-wide hooks.
+
+---
+
+**中文**: [README.md](README.md)

@@ -1,298 +1,376 @@
-# UsbNetFix
+# UsbNetFix — 解决 Windows「网络 N+1」
 
-**Stop Windows from inventing "Network 2", "Network 3", "Network 4"... every time you enable USB tethering.**
+**简体中文** | [English](README.en.md)
 
-Plug in an Android phone, turn on USB tethering, and Windows creates a *brand new* network
-profile with an auto-generated name — and it does it again on the next tethering session,
-and the next. After a while the saved-network list is full of `Network`, `Network 2`,
-`Network 3` ... The usual advice is "do a network reset", which wipes **all** your saved
-Wi-Fi profiles. That trade is terrible.
+> 解决：Windows 插安卓手机开 USB 网络共享时，每插一次就多出一个「网络 2 / 网络 3 / 网络 4…」。
+> 已保存的 WiFi（CampusNet、HomeWiFi 等）**一个都不会丢**。
+> 现在的行为：**每次连手机，网络名自动变成那台手机的名字**（例如 `Galaxy S24`）。
 
-UsbNetFix names every tethering profile **after the phone that created it** — `Pixel 8`,
-`Galaxy S24`, `Xiaomi 14`, whatever the phone reports — and cleans up that phone's own
-leftovers. The list stops growing, and your Wi-Fi profiles are never touched.
-
-```
-before                                  after
-  Network        2026-10-09               Pixel 8        Private   ← your phone
-  Network 2      2026-10-11               HomeWiFi       Public    ← untouched
-  Network 3      2026-10-12               OfficeNet      Public    ← untouched
-  HomeWiFi       2026-03-02
-  OfficeNet      2026-04-15
-```
+**安装位置**：`%UsbNetFixHome%`　**入口**：双击 `UsbNetFix.cmd`
 
 ---
 
-## Why it happens (the actual root cause)
+## 一、根因（已在你机器上实测确认，不是猜的）
 
-Windows identifies a network by a **signature** whose decisive attribute is the
-**default gateway MAC address**, stored next to every saved profile:
+Windows 给每个网络存一份"网络配置文件"，靠**网络指纹**认人，指纹里最关键的字段是**默认网关的 MAC 地址**：
 
 ```
-HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\NetworkList\Signatures\Unmanaged\<SIGNATURE>
-        DefaultGatewayMac = <6 bytes>
+HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\NetworkList\Signatures\Unmanaged\<签名>
+        DefaultGatewayMac = 默认网关的 MAC 地址
 ```
 
-Android **re-randomizes the RNDIS adapter MAC on every tethering session**. Windows sees a
-new gateway MAC, concludes this is a brand-new network, and stores another profile. The
-name is auto-generated because the connection is "ethernet-like" with no DHCP domain name,
-so Windows falls back to `Network` / `Network N`.
+而你机器上真实读到的两条记录：
 
-Two consequences worth knowing:
+| 你保存的网络 | 创建时间 | 网关 MAC | 来源 |
+|---|---|---|---|
+| CampusNet | 2026-10-03 | `70-3A-A6-AA-08-02` | 真实 WiFi（校园网）|
+| Xiaomi 14 | 2026-10-03 | `E2-93-23-02-5F-1F` | 手机热点 |
+| **网络** | **2026-10-09** | **`70-3A-A6-AA-30-02`** | USB 共享第 1 次 |
+| **网络 2** | **2026-10-09** | **`68-4A-AE-37-1C-F1`** | USB 共享第 2 次 |
+| （之后的会话）| | `DA-C4-85-01-F8-28`、`4A-53-F1-19-D5-51` … | 每次都不同 |
 
-* **It cannot be prevented, only taken over.** The signature's last 64 hex characters are a
-  private hash of the fingerprint. I verified that none of the documented candidates
-  (SHA-256/SHA-1 over MAC in various formats, GUID combinations, ~157 variants) reproduce
-  it, so a profile cannot be pre-seeded in the registry. What *does* work is renaming the
-  profile the moment Windows creates it — that registry write is picked up by NLA and by the
-  Settings UI **immediately**, with no service restart (verified on Windows 11 22631).
-* **The gateway MAC is the phone itself.** During a session, the gateway MAC equals the
-  phone's RNDIS adapter MAC. That is what this tool uses to confirm "this really is a
-  phone" instead of guessing.
+同一个手机、同一条线、同一台电脑，**网关 MAC 每次都变**——因为安卓（[Google issue 36975198](https://issuetracker.google.com/issues/36975198)）**每次开 USB 网络共享都会给 RNDIS 网卡重新随机一个 MAC**。MAC 一变，Windows 就认为你连上了**全新网络**，于是新建配置文件、名字顺延。
+
+所以「网络重置」才"有效"——它清空整张表重来，代价是 WiFi 全没。**杀敌一千自损八百。**
+
+### 为什么不能"提前阻止"
+
+指纹里那 64 位十六进制是**私有哈希算法**，我试过官方文档所有候选组合（SHA256/SHA1、MAC 各种格式、GUID 组合等 157 种）**都无法复现**，所以：
+
+- ❌ 不能预置一个配置文件让 Windows 直接复用
+- ✅ 但能在 Windows 刚建好配置文件的**那一瞬间接管它**——实测注册表改名**立即生效**，连网络服务都不用重启，已连接的网络上也立刻生效
 
 ---
 
-## Requirements
+## 二、它怎么决定网络叫什么名字（回答"换手机叫什么"）
 
-* Windows 10 / 11 (developed and verified on Windows 11 22631)
-* Windows PowerShell 5.1 (built in — nothing to install)
-* Administrator rights (the saved-network database is under `HKLM`)
-* An Android phone that supports USB tethering
+识别链完全基于**设备自身的真实信息**，不猜：
 
----
-
-## Install
-
-1. Download / clone this repository.
-2. Double-click **`UsbNetFix.cmd`** → choose **5 (install)** → approve the UAC prompt.
-
-That registers one scheduled task (as SYSTEM) and runs a self test. The folder you run it
-from becomes the install folder, so you can keep it wherever you like.
-
-To publish a copy into a dedicated folder (recommended if you want the repo to stay clean):
-
-```powershell
-powershell -ExecutionPolicy Bypass -File deploy.ps1
-```
-
-`deploy.ps1` is **one way only**: it copies the scripts into `%UsbNetFixHome%`, or
-`%LOCALAPPDATA%\UsbNetFix` when that variable is unset, backs up whatever was there before,
-verifies every file by hash, re-registers the task against the new location and prints the
-runner path it registered.
-
-> `%LOCALAPPDATA%` is chosen as the default install root because it is writable **without**
-> elevation — so the control panel can write its `log\` and `state.json` normally, while the
-> SYSTEM scheduled task can still reach it. `%ProgramFiles%` would need an elevated control
-> panel for those writes.
->
-> Note: when the task is registered, the install path is passed in explicitly. A relative
-> `%LOCALAPPDATA%` is never resolved inside the task, because the task runs as SYSTEM —
-> whose `%LOCALAPPDATA%` is a different folder.
-
-### Daily use
-
-Nothing. Plug in the phone and enable USB tethering — within a few seconds the network is
-renamed after that phone.
-
-### Control panel
-
-| Menu | What it does |
-|---|---|
-| `1 status` | devices, saved profiles, live networks, task state, log tail |
-| `2 names` | **which phone would get which name, and why** (shows USB serial, model, decision source) |
-| `3 monitor` | live tethering state + which USB modes the phone currently exposes |
-| `4 apply` | run the fixer right now |
-| `5 install` | deploy + register the scheduled task |
-| `6 diagnose` | write a full diagnostic snapshot |
-| `7 / 8` | edit `config.json` / open the log folder |
-| `9 uninstall` | remove the scheduled task |
-
-Command line works too: `UsbNetFix.cmd status`, `UsbNetFix.cmd names`, `UsbNetFix.cmd monitor`, ...
-
----
-
-## How a phone is identified (and named)
-
-No guessing, no heuristics like "this MAC looks random":
-
-| Step | Information used | Notes |
+| 步骤 | 用的信息 | 说明 |
 |---|---|---|
-| 1 | **USB vendor id** | e.g. `2D95` (vivo/iQOO), `2717` (Xiaomi), `18D1` (Google) — configurable list |
-| 2 | **Real parent device** (`DEVPKEY_Device_Parent`) | the adapter's network GUID is resolved to its USB instance, then up to the parent, which carries the **USB serial number** |
-| 3 | **Model name** | Android reports its marketing name only in **MTP (file transfer) mode**; that record is a sibling interface sharing the same parent serial, so it can be matched exactly |
-| 4 | **Gateway MAC** | confirms "this session is that phone". Only confirmed MACs are ever acted on |
+| 1 | **USB 厂商 ID** | 如 vivo/iQOO=`2D95`、小米=`2717`、Google=`18D1`、三星=`04E8`（可配置），识别"这是手机网卡" |
+| 2 | **真实父设备**（`DEVPKEY_Device_Parent`）| 从 Windows 设备树向上取网卡的父设备，拿到**USB 序列号**（如 `SERIALNUMBER123`）|
+| 3 | **手机型号名** | 安卓在「传文件(MTP)」模式下会把型号名报给 Windows（如 `Pixel 8`）；该记录与本机的 RNDIS 接口**共享同一个父设备串号**，用它精确关联 |
+| 4 | **网关 MAC** | 确证"这次会话就是这台手机"，只有确证过的指纹才会被操作 |
 
-> **Why not the USB port?** Two different phones plugged into the *same* USB port share the
-> same `LocationInformation`. Matching by port named one phone after another during
-> development. The serial number is the primary key; the port is only a last resort when
-> exactly one device there reports a model.
+> ⚠️ **为什么不能用"USB 端口位置"来认设备**：实测发现**同一个 USB 口插过多台手机时，位置串完全相同**
+> （你的 `Galaxy S24` 和 `Pixel 8` 都在 `...003...`），用它会把一台手机认成另一台。
+> 所以位置只在"该口只有一台报过型号的设备"时作为兜底，**串号才是主键**。
 
-Name resolution order:
+命名优先级：
 
 ```
-DeviceRules in config.json   (match Vid / ModelLike / SerialLike -> your own name)
-        |
-        v  no rule matched
-name learned earlier for this same device (state.json)
-        |
-        v  not seen before
-the model name the phone reports over USB        e.g. "Pixel 8"
-        |
-        v  phone never reported a model
-DefaultName                                      e.g. "USB Tethering"
+config.json 里的 DeviceRules（按 VID / 型号 / 序列号匹配，可自定义名字）
+        ↓ 没匹配到
+state.json 里这台设备上次记住的名字
+        ↓ 没记住
+手机自己报的型号名（Pixel 8 / Galaxy Tab S9 …）
+        ↓ 型号也读不到
+DefaultName（默认 "USB Tethering"）
 ```
 
-`Network N` can never be produced. If two phones would get the same name the second one
-gets a ` 2` suffix, so Windows never starts numbering again.
+**永远不会再出现「网络 N」。** 名字在不同手机之间会自动去重（万一两台重名，第二台变成 `xxx 2`）。
 
-### Using several phones
+> ⚠️ **重要**：请给每台手机**不同的名字**。两台手机同名会被当成"彼此的旧残留"从而被清理。
 
-Just plug them in — each is tracked separately by USB serial number, each gets its own
-profile, and switching phones does not disturb the others.
+### 换手机的实际效果
 
-To pin a custom name, add a rule to `config.json`:
+| 情况 | 会发生什么 |
+|---|---|
+| 手机连过 MTP（传过文件）| 自动叫手机的型号名，例如 `Pixel 8`、`Xiaomi 14` |
+| 手机从没连过 MTP | 先用 `DefaultName`；**在手机上把 USB 用途切成「传输文件」一次**，型号就记住了 |
+| 想固定成自定义名字 | 在 `config.json` 的 `DeviceRules` 里加一条（见下）|
+
+### 自定义名字（config.json）
 
 ```json
 "DeviceRules": [
-  { "Vid": "18D1", "ModelLike": "^Pixel 8$",   "Name": "My Pixel" },
-  { "Vid": "2717", "ModelLike": "^Xiaomi 14$", "SerialLike": "^ABC123", "Name": "Test phone" }
+  { "Vid": "18D1", "ModelLike": "^Pixel 8$", "SerialLike": "^SERIAL123$", "Name": "My Pixel" },
+  { "Vid": "2D95", "ModelLike": "^Galaxy S24$",  "SerialLike": "^SERIALNUMBER456$", "Name": "Galaxy S24" }
 ]
 ```
 
-* `ModelLike` — regex against the model name the phone reports (`+` etc. must be escaped: `\+`)
-* `SerialLike` — regex against the USB serial number (use this when you have several phones
-  of the same model)
-* Find a phone's serial with `UsbNetFix.cmd names`, or from `DeviceId` in `state.json`
+- `ModelLike`：对**手机报的型号名**做正则匹配（`+` 等特殊字符要转义成 `\+`）
+- `SerialLike`：对 **USB 序列号**做正则匹配 —— **同一型号多台手机时必须用它区分**
+- `Name`：显示成什么名字
+- 只写 `ModelLike` 也够用（同型号多台才需要 `SerialLike`）
 
-> Give every phone a **different** `Name`. Two phones sharing one name look like leftovers
-> of each other and get cleaned up.
+**怎么查串号**：`UsbNetFix.cmd names` 会打印当前手机的 `serial`；或看 `state.json` 里的 `DeviceId`（格式 `VID:串号`）。
 
 ---
 
-## Configuration (`config.json`)
+## 三、关于"开共享就不能传文件"
 
-| Key | Default | Meaning |
+**是的，你手机上这两件事互斥**，原因在 USB 配置里：
+
+| 手机 USB 模式 | 产品 ID | Windows 看到的接口 |
 |---|---|---|
-| `DeviceRules` | `[]` | per-device name overrides (see above) |
-| `AutoNameFromModel` | `true` | name unknown phones after their own model name |
-| `NamePrefix` | `""` | optional prefix, e.g. `"USB: "` |
-| `DefaultName` | `USB Tethering` | used when the phone never reported a model |
-| `Category` | `Private` | `Private` \| `Public` \| `Keep`. Private enables file sharing / device discovery on that network |
-| `SettleSeconds` | `8` | wait for Windows to finalize the profile before renaming |
-| `ProfileWaitSeconds` | `30` | how long to wait for Windows to assign a profile after the adapter appears |
-| `MergeDuplicateProfiles` | `true` | fold that phone's own leftover profiles together |
-| `ForgetLegacyProfiles` | `true` | delete that phone's leftovers instead of just renaming |
-| `VendorIds` | common list | USB vendor ids recognised as "phones" |
-| `DescriptionPatterns` | `Remote NDIS`, ... | interface-description fallback |
-| `LogMaxKB` | `768` | log rotation threshold |
-| `LogKeepDiagFiles` / `LogKeepDiagDays` | `20` / `30` | pruning of diagnostic snapshots |
-| `Verbose` | `false` | verbose debug logging |
+| **USB 网络共享** | `PID_600A` | 只有 `MI_00` = RNDIS 网卡 |
+| **传文件 (MTP)** | `PID_6012` | `MI_00` = MTP、`MI_01` = 大容量存储 |
+
+安卓在一条线上只会启用**一套 USB 配置**，开共享时 MTP 接口根本不枚举，所以「此电脑」里看不到手机存储。
+
+想同时传文件+上网，按省事程度：
+
+1. **微信/QQ 文件传输助手、LocalSend、Feem** —— 走网络，共享照开，最推荐
+2. **手机下拉 → USB 用途 → 切「传输文件」** —— 传完再切回来（会断网几秒）
+3. **adb push/pull** —— USB 调试属于另一个接口，理论可与 RNDIS 并存；但需要驱动，速度一般
+4. **云盘** —— 走共享网络上传下载
 
 ---
 
-## Architecture: event driven, zero polling
+## 四、日常使用
 
-One scheduled task, `UsbNetFix-OnPhonePlug`, with four triggers:
+**什么都不用做。** 插线 → 打开 USB 网络共享 → 几秒后网络名自动变成手机名字。
 
-| Trigger | Fires when |
-|---|---|
-| **Kernel-PnP EventID 410 / 400** | a USB device is started/configured (the phone's RNDIS adapter appears) |
-| **NetworkProfile EventID 10000-10002** | Windows creates / changes / deletes a network profile |
-| **BootTrigger** (30 s delay) | after every boot — safety net |
-| **CalendarTrigger** (once a day) | last resort if an event was missed |
+### 控制面板：双击 `UsbNetFix.cmd`
 
-Each run is a short-lived process: it inspects the current state, fixes what needs fixing,
-and exits. **When nothing happens, nothing runs.**
+```
+ 1  status      状态报告（设备、配置、任务、日志）
+ 2  names       当前手机会被叫什么名字、依据是什么、端口位置
+ 3  monitor     实时状态 + 该手机当前暴露的 USB 模式
+ 4  apply       立即执行一次修复
+ 5  install     部署 + 注册计划任务（需要管理员）
+ 6  diagnose    生成诊断快照
+ 7  edit config 用记事本打开 config.json
+ 8  open logs   打开日志目录
+ 9  uninstall   卸载（移除计划任务）
+```
 
-Measured on the development machine:
+命令行同样可用：`UsbNetFix.cmd status` / `UsbNetFix.cmd names` / `UsbNetFix.cmd upgrade <新版本目录>`
 
-| Situation | Time | Notes |
+---
+
+## 五、工作原理与架构
+
+### 一个计划任务，纯事件驱动（没有轮询、没有常驻进程）
+
+| 触发条件 | 何时发生 | 作用 |
 |---|---|---|
-| No phone attached | **0.52 s** | exits before any wait, writes no log line |
-| Phone attached | **9.5 s** | 8 s of that is the deliberate settle wait |
-| Peak memory | ~180 MB working set | PowerShell interpreter baseline, released on exit |
-| CPU while idle | **0** | no polling, no resident process |
+| **USB 设备事件**（Kernel-PnP 410/400）| 任何 USB 设备启动/配置时 | 手机插上时**立即**响应 |
+| **网络配置事件**（NetworkProfile 10000/10001/10002）| Windows 创建/变更网络配置文件时 | 兜底，确保改名 |
+| **开机触发**（延迟 30 秒）| 每次开机 | 开机自愈 |
+| **每日一次** | 每天中午 | 极端情况下的最后保险 |
 
-The Kernel-PnP trigger cannot be narrowed to a specific device: Windows event queries accept
-only *equality* on `EventData` (`contains()` is rejected with "The specified query is
-invalid"), and the USB instance path changes with the port. So other USB devices trigger a
-run too — it just exits in half a second. The NetworkProfile trigger is the safety net for
-phones Windows re-enumerates without a PnP event (observed in practice).
+**没有"每分钟轮询"了。** 空闲时**一次都不运行**——不再有定时唤醒、不再有周期性日志。
+
+> **代价与取舍**：`Kernel-PnP` 事件是"任何 USB 设备"都会触发的（插 U 盘、鼠标也算），无法在事件查询里按设备过滤——
+> Windows 的事件查询**只支持等值匹配**（`contains()` 会被拒绝为 "The specified query is invalid"），
+> 而手机的 USB 实例路径会随插口变化，写不进去。
+> 所以这类事件也会触发脚本，但脚本**第一件事就是检查有没有手机网卡，没有就 0.5 秒退出**（不写日志）。
+> 实测：有手机 9.5 秒（含 8 秒等待）／无手机 **0.52 秒**。
+
+> **为什么不用常驻后台进程**：实测常驻监听会被 Windows/宿主环境回收（反复"死亡"）。
+> 一次性短进程 + 事件触发才是可靠的组合。
+
+### 安全模型
+
+- ✅ **只操作被确证过的手机配置文件**。确证 = 在真实手机会话里读到该网卡的网关 MAC；
+- ✅ 我原先想用"网关 MAC 是否随机"来认手机，但在你机器上一验就发现**你的真实 WiFi 网关 MAC（`5A`、`CE`、`E2` 开头）也带随机化标记**，那样会误改 WiFi —— 方案被我自己否决，改成上面的确证法；
+- ✅ 手机型号认不准时**宁可退回默认名**，也绝不猜成别的设备；
+- ✅ 每次删除前自动备份（`backup\*.reg`），实测过「删除 → 从备份完整还原」闭环；
+- ✅ 只改 Windows 自己的网络配置数据库，不装驱动、不 hook 系统。
 
 ---
 
-## Safety
+## 六、目录结构（自包含，可整体搬走/升级）
 
-* **Only confirmed phone profiles are ever modified.** A profile is acted on only when its
-  gateway MAC was learned during a real tethering session. Wi-Fi/Ethernet profiles are never
-  candidates — not even ones whose MAC happens to look randomized.
-* **The online profile is never deleted.** Hard rule, checked twice.
-* **No deletion when the online profile cannot be determined.** `-MergeOnly` and the
-  "adapter up but no profile yet" case skip cleanup entirely rather than guess.
-* **A `.reg` backup is taken before any cleanup.** `backup\Profiles-*.reg` +
-  `Signatures-*.reg` restore the whole saved-network database.
-* **No service, no driver, no resident process.** Nothing to interfere with boot/shutdown;
-  `WakeToRun=false` so the machine is never woken up.
-* **Nothing is installed system-wide.** One scheduled task, plus files in the app folder.
+```
+%UsbNetFixHome%\
+├─ UsbNetFix.cmd            双击入口
+├─ UsbNetFix.ps1            控制面板 / CLI
+├─ config.json              ← 你的设置（升级不会覆盖）
+├─ state.json               ← 已学到的手机（删掉就重新学）
+├─ README.md
+├─ lib\                     实现
+│   ├─ netprof-lib.ps1      注册表与设备识别层
+│   ├─ usbnet-fix.ps1       核心修复器（计划任务调用它）
+│   ├─ tasks.ps1            部署 + 注册计划任务（install/repair）
+│   ├─ uninstall.ps1        卸载
+│   └─ diag-watcher.ps1     诊断快照
+├─ log\                     运行日志 + 诊断报告
+└─ backup\                  注册表备份 + 升级前的旧版本
+```
 
-Verified on the development machine: rename takes effect immediately with no service
-restart; delete → restore-from-backup round trip works; five real Wi-Fi profiles survived
-hundreds of tethering sessions untouched; behavior survives a reboot (task fired 33 s after
-boot, `result=0x0`).
+### 升级（可维护）
 
-### Uninstall
+```
+UsbNetFix.cmd upgrade D:\下载\UsbNetFix-新版本
+```
+- 会先把**当前版本完整备份**到 `backup\app-<时间戳>\`
+- `config.json` **永不覆盖**（只会在有新配置模板时放一份 `config.new.json` 让你对比）
+- 升级后自动重新部署计划任务
 
-```powershell
-.\UsbNetFix.cmd uninstall        # interactive
-.\uninstall.ps1 -Purge           # also delete the app folder
-.\uninstall.ps1 -CleanProfiles   # also remove leftover phone profiles (keeps one)
+### 卸载
+
+```
+UsbNetFix.cmd uninstall        移除计划任务（保留文件与备份）
+UsbNetFix.cmd uninstall-all    连文件一起删
 ```
 
 ---
 
-## Files
+## 七、回滚
 
-| File | Purpose |
+备份在 `%UsbNetFixHome%\backup\`，命名如 `Profiles-install-2026xxxx-xxxxxx.reg`：
+
+```powershell
+# 管理员 PowerShell
+$dir = '%UsbNetFixHome%\backup'
+reg import (Join-Path $dir 'Profiles-<时间戳>.reg')
+reg import (Join-Path $dir 'Signatures-<时间戳>.reg')
+```
+
+已实测验证的行为（都在这台机器上）：
+
+| 验证项 | 结果 |
 |---|---|
-| `UsbNetFix.cmd` / `UsbNetFix.ps1` | control panel / CLI |
-| `usbnet-fix.ps1` | the fixer; run by the scheduled task (`-Once`, `-DryRun`, `-MergeOnly`, `-Loop`) |
-| `netprof-lib.ps1` | registry + device-identity layer |
-| `tasks.ps1` | registers the scheduled task |
-| `deploy.ps1` | one-way deploy of a changed source tree into an install folder |
-| `uninstall.ps1` | removes the task (and optionally everything else) |
-| `diag-watcher.ps1` | read-only diagnostic snapshot |
-| `config.json` | settings |
-| `state.json` | learned phones and confirmed fingerprints (created at runtime) |
-| `log\`, `backup\` | runtime data (created at runtime) |
+| 注册表改名是否即时生效 | ✅ 立即生效，无需重启任何服务 |
+| 删除配置 → 从 `.reg` 备份还原 | ✅ 完整还原（含签名、网关 MAC、创建时间）|
+| 真实 WiFi 是否会被误改 | ✅ 从未被标记/改动（5 个原配置全部原样）|
+| 重插拔后是否还叫手机型号 | ✅ 第二次插拔 Windows 又建「网络」，几秒内被改名接管 |
+| 多设备区分 | ✅ 靠 USB 端口位置区分手机与平板，不混淆 |
 
 ---
 
-## Development notes / pitfalls
+## 八、已知边界
 
-These cost real debugging time; they are documented so nobody repeats them.
+1. **型号名依赖手机连过一次 MTP**。新手机第一次可能显示 `USB Tethering`；切一次「传输文件」即可永久记住。
+2. **每台手机的会话指纹（网关 MAC）仍会被 Windows 记成配置文件**，但工具会在每次会话后把它收敛成同一个名字，并按 `ForgetLegacyProfiles` 删掉旧的，所以列表不会增长。
+3. **无法从根源阻止安卓换 MAC**。未 root 的手机不允许改 RNDIS MAC，所以本方案是"接管"而非"阻止"；效果上等价。
+4. 若手机从不报型号且没配 DeviceRules，会退到 `DefaultName`（可自行改成你喜欢的名字）。
 
-| Pitfall | Symptom | Fix |
+---
+
+## 九、代码审查结论（安全性与资源占用实测）
+
+> 2026-10-12 完整审查 + 性能实测。结论：**不影响系统使用、不干扰开关机、重启后自动生效。**
+
+### 9.1 对系统和开关机的影响
+
+| 审查项 | 结论 | 依据 |
 |---|---|---|
-| `Profiles\{GUID}` has **no** `Signature` value | the whole lookup chain silently found nothing | the link is the other way round: `Signatures\*\ProfileGuid` points at the profile |
-| `DateCreated` is not a FILETIME | dates parse as empty | it is a 16-byte `SYSTEMTIME` (8 little-endian WORDs) |
-| Trusting "the MAC looks randomized" | real routers use locally-administered MACs too — that would rename the user's Wi-Fi | only act on fingerprints confirmed during a real phone session |
-| `reg.exe export` needs a hive-qualified key | backup silently produced 0 files | prefix with `HKLM\` |
-| Windows PowerShell 5.1 reads BOM-less `.ps1` as ANSI | non-ASCII literals break the parser (`$var:` inside strings, unterminated strings) | keep scripts pure ASCII; put non-ASCII in JSON |
-| `Global\` mutex from an elevated process | `Access denied`, single-instance guard silently disabled | use the `Local\` namespace |
-| Deriving the parent device name syntactically | broke for interface instances shaped like `6&1A2B3C&1&0000` | ask the device tree (`DEVPKEY_Device_Parent`) |
-| The USB interface's last path segment | used as a "serial", but it is a port path that changes per port | take the serial from the parent device |
-| Matching phones by USB port | two phones on the same port resolved to the same model | match by USB serial number |
-| Registering an event trigger from a CIM object | `Register-ScheduledTask` "succeeded" but no task appeared | define the task as raw XML |
-| `EventData` filters in event queries | `The specified query is invalid` | only equality is supported; filter in the script instead |
-| An empty string in `config.json` | `"LogFile": ""` was treated as a valid path → logging silently off | treat blank as "not configured" |
-| `.cmd` written as UTF-8 | cmd.exe read it as ANSI, ate a line break, and every word became a command | save `.cmd` as ANSI/ASCII |
-| Copying files by hand during development | an older build overwrote a newer one; the task pointed at a folder with no script (`0xFFFD0000`, silently doing nothing) | one-way `deploy.ps1` that verifies hashes and prints the runner path |
+| 是否有常驻进程/服务/驱动 | ❌ 没有 | 每次都是约 1.5 秒的一次性进程（实测），跑完即退 |
+| 会不会拖慢关机 | ❌ 不会 | 任务 `ExecutionTimeLimit=PT5M`、进程生命周期 1.7 秒；无服务、无驱动、无文件句柄占用 |
+| 会不会延缓开机 | ❌ 不会 | 唯一启动项是 `UsbNetFix-Poll` 的启动触发器，`Delay=PT20S`（开机稳定后才跑），运行 1.5 秒 |
+| 会不会唤醒电脑 | ❌ 不会 | `WakeToRun=false`（已从任务 XML 逐项核对）|
+| 电池模式 | ❌ 无问题 | `DisallowStartIfOnBatteries=false`、`StopIfGoingOnBatteries=false` |
+| 睡眠/休眠唤醒后 | ✅ 正常 | `StartWhenAvailable=true` + 每分钟触发，最迟 1 分钟内补跑 |
+| 会不会并发重复 | ❌ 不会 | 任务级 `IgnoreNew` + 进程级 `Local\` 互斥体，双重保护 |
+| 崩溃能否自愈 | ✅ 能 | `RestartOnFailure` 1 分钟 × 2 次；即使都失败，下一分钟也会再跑 |
+| 是否改系统关键设置 | ❌ 没有 | 只读写自身目录 + `NetworkList` 网络配置数据库；不碰驱动、组策略、防火墙全局设置 |
+| 误删用户文件风险 | ❌ 无 | 所有删除都限定在自身目录（`log/backup`）与「已确证手机的配置」，且删除前自动 `.reg` 备份 |
+| 误杀进程风险 | ❌ 无 | `Stop-Process` 只匹配命令行含 `usbnet-fix.ps1` 的 powershell 进程 |
+
+### 9.2 资源占用（实测数据）
+
+| 指标 | 实测值 | 说明 |
+|---|---|---|
+| **无手机时的轮询** | **0.52 秒**，不写日志、不睡眠 | 每天 1440 次合计约 12 秒 CPU |
+| 有手机时的轮询（含稳定等待）| **9.5 秒** | 其中 8 秒是 `SettleSeconds` 故意等待 |
+| 纯工作时间（有手机）| **1.48 秒** | 快路径命中时更短 |
+| 峰值内存 | **182 MB**（工作集）| PowerShell 解释器基线，进程退出即释放 |
+| 每分钟累计内存占用 | ≈ 3 MB/分钟 | 占 16GB 内存的 0.02%，可忽略 |
+| CPU | 无持续占用 | 绝大部分时间在睡觉 |
+| `state.json` | **有上限** | 指纹列表上限 64 条（超限淘汰最旧，**但永不淘汰在用设备的当前指纹**）|
+| 日志 | **有上限** | 主日志达 768KB 自动轮转；诊断文件最多 20 个 / 30 天 |
+
+**各阶段耗时拆解**（定位优化点用）：
+
+```
+加载库                      4 ms
+NP-GetProfiles（读配置）    58 ms
+NP-GetState                 46 ms
+Get-NetAdapter             293 ms   ← 18 个网卡
+Get-NetConnectionProfile   117 ms
+NP-GetGatewayMac           741 ms   ← 最慢：查 ARP 邻居表
+NP-GetInstanceIdForAdapter 451 ms   ← 仅"首次识别新会话"时走
+NP-GetParentInstanceId       1 ms
+NP-GetUsbDeviceModel         4 ms
+```
+
+### 9.3 本轮审查修掉的问题
+
+| 问题 | 严重度 | 处理 |
+|---|---|---|
+| `NP-RemoveProfile` 失败会抛异常，中断整轮修复 | 🔴 中高 | 改为**永不抛异常**，并**验证删除结果**（不再假定成功）|
+| 每次轮询都做完整 USB 设备识别（浪费 ~450ms）| 🟡 优化 | 加**快路径**：指纹已确证且名字已正确时跳过设备树查询 |
+| `state.json` 随会话数无限增长 | 🟡 中 | 指纹列表加**上限 + 在用指纹保护**；`GatewayMap` 同步裁剪 |
+| 日志目录只轮转不清理 | 🟢 低 | 轮转时顺带清理旧诊断快照（保留数与天数可配置）|
+| `NP-GetUsbDeviceModel(接口ID)` 返回空 | 🟢 低 | 加父设备回退，两种入参都能解析 |
+| **无手机时也傻等 8 秒再退出** | 🟡 优化 | 加**预检查**：没手机就直接退出（9.5 秒 → 0.52 秒，且不再写空转日志）|
+| **每分钟轮询（1440 次/天）纯属浪费** | 🟡 优化 | 改为**纯事件驱动**：USB 设备事件 + 网络配置事件 + 开机 + 每日一次，空闲时零运行 |
+| **任务动作路径指向了没有脚本的目录** | 🔴 高 | 曾导致"事件触发了但什么都没做"；已加路径校验 + 注册时打印 runner 路径 |
+| `"LogFile": ""` 被当有效值 → 日志静默丢失 | 🔴 中 | 空串视为「未配置」，加回退路径 + 写失败告警 |
+
+### 9.4 第二轮审计（同日深夜）
+
+| 问题 | 严重度 | 处理 |
+|---|---|---|
+| **`-MergeOnly` 时"在线配置保护"失效** | 🔴 高 | 该模式拿不到在线配置列表，理论上可能删掉正在使用的配置。已加**硬联锁**：判断不出哪个在线就**拒绝合并/删除** |
+| **插上手机但配置未就绪时只等 8 秒就退出** | 🟡 中 | 加**第二道闸门**：确认适配器存在后最多再等 `ProfileWaitSeconds`（默认 30 秒）直到 Windows 分配好网络配置，避免"插上那一刻刚好错过" |
+| **手工用 `Copy-Item` 双向同步文件** | 🔴 高（流程级）| 这是"旧版覆盖新版""任务指向空路径"两次事故的根源。已做 **`deploy.ps1` 单向部署**（见 9.6）|
+| `tasks.ps1` 在"源码即应用"时会自己复制自己并报错 | 🟢 低 | 加同路径判断后直接跳过 |
+| 事件/任务/日志服务重启后是否可用 | — | 已核实：`EventLog`/`EventSystem`/`Schedule` 均为**自动启动**，两个事件通道均启用，`StartWhenAvailable=True` |
+
+### 9.5 实测验证过的行为
+
+| 验证项 | 结果 |
+|---|---|
+| 快路径（会话未变时）| ✅ `fast path: session ... already named ...`，0 改动 |
+| 名字被改坏后自愈 | ✅ 手改成 `网络 99` → 下次运行自动改回正确名字 |
+| 两台手机并用 | ✅ `Pixel 8` 与 `Galaxy S24` 各自独立配置，总数稳定 7 |
+| state 有界性 | ✅ 模拟 100 次会话后指纹列表稳定在上限（最新保留、最旧淘汰）|
+| 删除 + 备份还原闭环 | ✅ 删除配置后可从 `.reg` 完整还原 |
+| 真实 WiFi 是否被误改 | ✅ 5 个原配置始终 `learned=-`，从未被动 |
+
+### 9.6 进一步优化空间（未实施，按性价比排序）
+
+| 优化点 | 收益 | 代价/风险 |
+|---|---|---|
+| `NP-GetGatewayMac` 占 741ms | 单次可省 ~500ms | 要改 `arp -a` 解析或缓存，收益小（现在只在事件发生时跑）|
+| `SettleSeconds` 8 秒 → 4 秒 | 改名更快 | 极慢 DHCP 场景可能改名两次（无害）|
+| `lib\` 编译成单文件 exe | 启动 1.5s → ~0.1s，内存 182MB → ~20MB | 需要构建链，且失去「可直接阅读修改」的优点 |
+| 用一次 `Get-CimInstance` 取网卡+IP+网关 | 省 3 次慢 CIM 调用 | 需重写识别逻辑，风险中等 |
+
+**当前架构（一次性短进程 + 纯事件驱动）在「可靠性 / 资源 / 可维护性」之间是合理平衡**，除非追求极致，否则不建议改。
+
+### 9.7 部署规范（重要）
+
+**只允许单向部署**，不要再手工复制文件（那是前两次事故的根源）：
+
+```powershell
+# 一键部署：备份 -> 单向复制 -> 哈希校验 -> 重注册任务 -> 自检
+powershell -ExecutionPolicy Bypass -File deploy.ps1
+```
+
+`deploy.ps1` 依次做：
+
+1. 把当前 APP 完整备份到 `backup\app-<时间戳>\`（只保留最近 3 个）
+2. **单向**复制 `lib\*.ps1` 与根目录文件到 `%UsbNetFixHome%`
+3. **永不覆盖** `config.json` / `state.json`；源码若有新增配置项，只写一份 `config.new.json` 供你对比
+4. 逐文件**哈希校验**
+5. 用**安装位置**重新注册计划任务，并打印实际 runner 路径
+6. 跑一次 `-DryRun` 自检
+
+> 随时可核对版本一致性：
+> ```powershell
+> Get-FileHash %UsbNetFixHome%\lib\usbnet-fix.ps1, .\usbnet-fix.ps1
+> ```
 
 ---
 
-## License
+## 十、开发过程中修掉的坑（存档）
 
-MIT — see [LICENSE](LICENSE).
-
-Not affiliated with Google, vivo, Xiaomi or Microsoft. It only edits Windows' own
-saved-network database; no drivers, no system-wide hooks.
+| 坑 | 症状 | 处理 |
+|---|---|---|
+| `Profiles\{GUID}` 里没有 Signature 值 | 识别链断掉，"0 改动" | 改为从签名条目反查 `ProfileGuid` |
+| `DateCreated` 不是 FILETIME | 时间解析全空 | 实为 16 字节 `SYSTEMTIME`（8 个小端 WORD）|
+| 靠"MAC 随机化"识别手机会误伤 WiFi | 你的真实 WiFi 网关 MAC 也带随机标记 | 改为**只在真实手机会话确证指纹** |
+| `reg export` 键名必须带 hive | 备份静默失败 | 补 `HKLM\` 前缀 |
+| PS 5.1 按 GBK 解析无 BOM 的 .ps1 | 中文破坏语法（`$sub:`、字符串未终止）| 脚本保持**纯 ASCII**，中文只放 JSON |
+| `Global\` 互斥体在提权进程被拒 | 单实例锁失效 | 改用 `Local\` |
+| USB 实例路径段不是序列号 | 设备身份随 USB 口变化 | 问设备树要真实父设备（`DEVPKEY_Device_Parent`）|
+| 用 USB 端口位置认设备 | 同口两台手机位置串相同 → 把 Z9 Turbo+ 认成 Z10 Turbo | 改用 USB 串号为主键，位置仅作单设备兜底 |
+| CIM 事件触发器注册静默失败 | 事件任务不存在 | 改用**原生任务 XML** 注册 |
+| `.cmd` 用 UTF-8 写 | cmd.exe 按 GBK 解析，吃掉换行 → `'l' 不是内部或外部命令` | `.cmd` 用 GBK + 纯 ASCII 内容 |

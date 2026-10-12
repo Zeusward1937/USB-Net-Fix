@@ -1,4 +1,4 @@
-# UsbNetFix — 解决 Windows「网络 N+1」
+# UsbNetFix — 解决Windows「网络N+1」
 
 **简体中文** | [English](README.en.md)
 

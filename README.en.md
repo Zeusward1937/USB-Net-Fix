@@ -24,13 +24,13 @@ before                                  after
 
 ## Install
 
-1. Download or clone this repository
+1. Put this folder anywhere (e.g. `D:\Tools\UsbNetFix`; avoid `C:\Program Files`)
 2. **Double-click `UsbNetFix.cmd`** → choose `5` → approve the UAC prompt
 
 Done. That registers one scheduled task (triggers on phone plug-in and on boot).
 
-> Administrator rights are required (the saved-network database lives under `HKLM`).
-> To install into a dedicated folder instead: `powershell -ExecutionPolicy Bypass -File deploy.ps1`
+> **The UAC prompt is intentional.** The saved-network database lives under `HKLM`, is owned by SYSTEM, and a standard user cannot even read it — without elevation the control panel could barely show anything.
+> Daily use needs **no interaction**: the background task runs as SYSTEM.
 
 ## Daily use
 
@@ -100,12 +100,20 @@ The ones you are likely to touch:
 2. **Windows still stores one profile per tethering session** — the tool renames it and removes that phone's older leftovers, so the list you see does not grow.
 3. **The MAC randomization cannot be stopped** (unrooted Android does not allow changing the RNDIS MAC). This tool takes over the profile instead of preventing it, which is equivalent in practice.
 
+## Self check
+
+```
+verify.bat
+```
+
+Seven checks: script syntax, ASCII purity, leftover personal data, runtime data, config validity, **a real run of each entry point**, and a final sweep.
+
 ## More documentation
 
 | Document | Contents |
 |---|---|
 | [docs/technical.md](docs/technical.md) | root cause, identification logic, event-driven architecture, measured resource usage |
-| [docs/safety.md](docs/safety.md) | safety model, verification records, rollback |
+| [docs/safety.md](docs/safety.md) | safety model, permissions, verification records, rollback |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | troubleshooting and development pitfalls |
 
 ## License

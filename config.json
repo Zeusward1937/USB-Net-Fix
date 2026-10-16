@@ -1,35 +1,47 @@
-{
-  "_readme_1": "UsbNetFix config. Every USB-tethering profile is named after the phone that created it.",
-  "_readme_2": "Resolution order: DeviceRules -> name learned earlier for this device -> the model name the phone reports over USB -> DefaultName. 'Network N' can never happen.",
-  "_readme_3": "DeviceRules fields: Vid (USB vendor id), ModelLike (regex on the model name the phone reports), SerialLike (regex on the USB serial number), Name (what to call it), Note.",
-  "_readme_4": "SerialLike is the reliable discriminator when several phones are used: Windows reports the model name per USB serial number, not per port.",
-  "_readme_5": "Category: Private (file sharing / discovery work) | Public | Keep",
-  "_readme_6": "ForgetLegacyProfiles=true removes that phone's own leftover profiles from earlier sessions, so the list never grows.",
-  "_readme_7": "IMPORTANT: give every phone a DIFFERENT Name - two phones sharing one name would look like leftovers of each other.",
-  "_readme_8": "To find the serial of a phone: run 'UsbNetFix.cmd names' while it is plugged in, or look at state.json (DeviceId is VID:serial).",
+﻿{
+    "_readme_1":  "UsbNetFix config. Every future USB-tethering profile is named after the phone that created it.",
+    "_readme_2":  "Resolution order: DeviceRules -\u003e name learned earlier for this device -\u003e the model name the phone reports over USB -\u003e DefaultName. \u0027Network N\u0027 can never happen.",
+    "_readme_3":  "DeviceRules fields: Vid (USB vendor id), ModelLike (regex on the model name the phone reports), SerialLike (regex on the USB serial number), Name (what to call it), Note.",
+    "_readme_4":  "AutoNameFromModel=true means a phone with no rule is named after its own model name (e.g. \u0027Pixel 8\u0027).",
+    "_readme_5":  "Category: Private (file sharing / discovery work) | Public | Keep",
+    "_readme_6":  "ForgetLegacyProfiles=true removes that phone\u0027s own leftover profiles from earlier sessions, so the list never grows.",
+    "DeviceRules":  [
 
-  "DeviceRules": [
-  ],
-
-  "AutoNameFromModel": true,
-  "NamePrefix": "",
-  "DefaultName": "USB Tethering",
-
-  "Category": "Private",
-
-  "PollSeconds": 3,
-  "SettleSeconds": 8,
-  "ProfileWaitSeconds": 30,
-
-  "MergeDuplicateProfiles": true,
-  "ForgetLegacyProfiles": true,
-
-  "VendorIds": ["2D95", "18D1", "2717", "22D9", "04E8", "12D1", "0BB4", "1004", "05C6", "2A70", "0E8D", "0FCE", "2916", "19D2"],
-  "DescriptionPatterns": ["Remote NDIS", "RNDIS", "Android", "USB.*Ethernet"],
-
-  "LogFile": "",
-  "LogMaxKB": 768,
-  "LogKeepDiagFiles": 20,
-  "LogKeepDiagDays": 30,
-  "Verbose": false
+                    ],
+    "AutoNameFromModel":  true,
+    "NamePrefix":  "",
+    "DefaultName":  "USB Tethering",
+    "Category":  "Private",
+    "PollSeconds":  3,
+    "SettleSeconds":  8,
+    "MergeDuplicateProfiles":  true,
+    "ForgetLegacyProfiles":  true,
+    "VendorIds":  [
+                      "2D95",
+                      "18D1",
+                      "2717",
+                      "22D9",
+                      "04E8",
+                      "12D1",
+                      "0BB4",
+                      "1004",
+                      "05C6",
+                      "2A70",
+                      "0E8D",
+                      "0FCE",
+                      "2916",
+                      "19D2"
+                  ],
+    "DescriptionPatterns":  [
+                                "Remote NDIS",
+                                "RNDIS",
+                                "Android",
+                                "USB.*Ethernet"
+                            ],
+    "LogFile":  "",
+    "LogMaxKB":  768,
+    "LogKeepDiagFiles":  20,
+    "LogKeepDiagDays":  30,
+    "ProfileWaitSeconds":  30,
+    "Verbose":  false
 }

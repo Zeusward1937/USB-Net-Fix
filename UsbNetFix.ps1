@@ -1,4 +1,3 @@
-#requires -Version 5.1
 <#
   UsbNetFix.ps1 -- control panel / single entry point of the UsbNetFix app
   ===========================================================================
@@ -9,8 +8,8 @@
       .\UsbNetFix.ps1 apply           apply the fix right now
       .\UsbNetFix.ps1 monitor         show live tethering state (USB/screen/MTP)
       .\UsbNetFix.ps1 names           show which name each phone gets, and why
-      .\UsbNetFix.ps1 install         deploy + register the scheduled task
-      .\UsbNetFix.ps1 uninstall       remove the task (and optionally everything else)
+      .\UsbNetFix.ps1 install         deploy + register the scheduled tasks
+      .\UsbNetFix.ps1 uninstall       remove tasks (and optionally everything else)
       .\UsbNetFix.ps1 diagnose        write a full diagnostic snapshot
       .\UsbNetFix.ps1 upgrade <dir>   copy a newer release over this app folder
 
@@ -27,7 +26,23 @@ param(
 $ErrorActionPreference = 'Continue'
 $root = $PSScriptRoot
 if (-not $root) { $root = Split-Path -Parent $MyInvocation.MyCommand.Path }
-. (Join-Path $root 'netprof-lib.ps1')
+
+# Both layouts are supported and must keep working:
+#   flat  <app>\UsbNetFix.ps1, <app>\netprof-lib.ps1, ...   (what you get from the release)
+#   lib   <app>\UsbNetFix.ps1, <app>\lib\netprof-lib.ps1    (what deploy.ps1 produces)
+function Get-AppScript {
+    param([string]$Name)
+    $flat = Join-Path $root $Name
+    if (Test-Path $flat) { return $flat }
+    return (Join-Path $root ('lib\' + $Name))
+}
+$libPath = Get-AppScript 'netprof-lib.ps1'
+if (-not (Test-Path $libPath)) {
+    Write-Host ('[UsbNetFix] cannot find netprof-lib.ps1 next to this script (' + $root + ')') -ForegroundColor Red
+    Write-Host '            the folder looks incomplete - re-copy the whole release folder.' -ForegroundColor Red
+    exit 1
+}
+. $libPath
 
 $script:CfgPath = NP-ConfigPath
 $script:Cfg = $null
@@ -107,9 +122,11 @@ function Show-Status {
     }
     Line ''
 
-    Line '-- scheduled task --------------------------------------------------'
-    if (-not (Test-Admin)) { Line '  (task state needs administrator rights - showing configured names only)' }
-    foreach ($n in @('UsbNetFix-OnPhonePlug','UsbNetFix-Poll','UsbNetFix-OnConnect')) {
+    Line '-- scheduled tasks -------------------------------------------------'
+    if (-not (Test-Admin)) {
+        Line '  (task state needs administrator rights - showing configured names only)'
+    }
+    foreach ($n in @('UsbNetFix-Poll','UsbNetFix-OnConnect')) {
         $t = Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue
         if ($t) {
             $i = $t | Get-ScheduledTaskInfo
@@ -130,8 +147,8 @@ function Show-Names {
     Head 'Which phone gets which name'
     $state = NP-GetState
     $adapters = @(Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue |
-        Where-Object { $_.InterfaceDescription -match 'Remote NDIS|RNDIS|Android|USB.*Ethernet' })
-    if ($adapters.Count -eq 0) { Line '  no phone/RNDIS adapter attached right now'; Line ''; return }
+        Where-Object { $_.InterfaceDescription -match 'Remote NDIS|RNDIS|Android|iQOO|vivo' })
+    if ($adapters.Count -eq 0) { Line '  no phone/RNDIS adapter attached right now'; Line '' ; return }
     foreach ($a in $adapters) {
         $ii  = NP-GetInstanceIdForAdapter -Adapter $a
         $par = NP-GetParentInstanceId -InstanceId $ii
@@ -142,7 +159,7 @@ function Show-Names {
         $res   = NP-ResolveDeviceName -Cfg $script:Cfg -InstanceId $ii -State $state
         Line ('  adapter    : ' + $a.Name + ' (ifIndex ' + $a.ifIndex + ')')
         Line ('  usb        : ' + $ii)
-        Line ('  location   : ' + $loc + '   <- ties the interfaces of one device together')
+        Line ('  location   : ' + $loc + '   <- the key that ties interfaces of one device together')
         Line ('  vendor     : ' + $ids.Vid + '   serial: ' + $(if ($ids.Serial) { $ids.Serial } else { '(not exposed)' }))
         Line ('  usb model  : ' + $(if ($model) { "'" + $model + "'" } else { '(phone never reported a model - connect it in MTP/file-transfer mode once)' }))
         Line ('  NAME       : ' + $res.Name)
@@ -155,7 +172,7 @@ function Show-Names {
 function Show-Monitor {
     Head 'Live USB tethering state'
     $adapters = @(Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue |
-        Where-Object { $_.InterfaceDescription -match 'Remote NDIS|RNDIS|Android|USB.*Ethernet' })
+        Where-Object { $_.InterfaceDescription -match 'Remote NDIS|RNDIS|Android|iQOO|vivo' })
     if ($adapters.Count -eq 0) { Line '  no phone attached / tethering off'; Line ''; return }
     foreach ($a in $adapters) {
         Line ('  adapter : ' + $a.Name + '   status=' + $a.Status + '   mac=' + $a.MacAddress)
@@ -171,8 +188,7 @@ function Show-Monitor {
         'USBSTOR'    = 'file transfer (storage)'
         'usbrndis6'  = 'USB tethering (RNDIS)'
     }
-    foreach ($k in (Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Enum\USB' -ErrorAction SilentlyContinue |
-                    Where-Object { $_.PSChildName -match 'VID_' })) {
+    foreach ($k in (Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Enum\USB' -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match 'VID_2D95|VID_18D1|VID_2717' })) {
         foreach ($i in (Get-ChildItem $k.PSPath -ErrorAction SilentlyContinue)) {
             $p = Get-ItemProperty $i.PSPath -ErrorAction SilentlyContinue
             $d = [string]$p.DeviceDesc
@@ -193,14 +209,14 @@ function Show-Monitor {
 
 function Invoke-Apply {
     Head 'Applying the fix now'
-    $fix = Join-Path $root 'usbnet-fix.ps1'
+    $fix = Get-AppScript 'usbnet-fix.ps1'
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $fix -Once
     Line ''
 }
 
 function Invoke-Install {
     Head 'Install / repair'
-    $rc = Invoke-Elevated -Script (Join-Path $root 'tasks.ps1') -Arguments @('-SourceDir', $root)
+    $rc = Invoke-Elevated -Script (Get-AppScript 'tasks.ps1') -Arguments @('-SourceDir', $root)
     Line ''
     Line ('  installer exit code: ' + $rc)
     return $rc
@@ -210,7 +226,7 @@ function Invoke-Uninstall {
     Head 'Uninstall'
     $uargs = @()
     if ($Command -eq 'uninstall-all') { $uargs += '-Purge' }
-    $rc = Invoke-Elevated -Script (Join-Path $root 'uninstall.ps1') -Arguments $uargs
+    $rc = Invoke-Elevated -Script (Get-AppScript 'uninstall.ps1') -Arguments $uargs
     Line ''
     Line ('  uninstaller exit code: ' + $rc)
     return $rc
@@ -218,7 +234,7 @@ function Invoke-Uninstall {
 
 function Invoke-Diagnose {
     Head 'Diagnostic snapshot'
-    Invoke-Elevated -Script (Join-Path $root 'diag-watcher.ps1') -Arguments @('-OutDir', (NP-LogDir))
+    Invoke-Elevated -Script (Get-AppScript 'diag-watcher.ps1') -Arguments @('-OutDir', (NP-LogDir))
     $last = Get-ChildItem (NP-LogDir) -Filter 'diag-*.txt' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1
     if ($last) {
         Line ('  newest report: ' + $last.FullName)
@@ -235,25 +251,28 @@ function Invoke-Upgrade {
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     $bk = Join-Path $root ('backup\app-' + $stamp)
     New-Item -ItemType Directory -Force -Path $bk | Out-Null
-    foreach ($sub in @('*.ps1','*.cmd','config.json','README.md')) {
-        Get-ChildItem (Join-Path $root $sub) -ErrorAction SilentlyContinue | ForEach-Object {
-            Copy-Item $_.FullName $bk -Recurse -Force -ErrorAction SilentlyContinue
-        }
+    foreach ($sub in @('lib','UsbNetFix.ps1','UsbNetFix.cmd','config.json','README.md')) {
+        $p = Join-Path $root $sub
+        if (Test-Path $p) { Copy-Item $p $bk -Recurse -Force -ErrorAction SilentlyContinue }
     }
     Line ('  current version copied to ' + $bk)
     # config.json is never overwritten by an upgrade
-    foreach ($sub in @('*.ps1','*.cmd','README.md')) {
-        Get-ChildItem (Join-Path $From $sub) -ErrorAction SilentlyContinue | ForEach-Object {
-            Copy-Item $_.FullName $root -Force -ErrorAction SilentlyContinue
-            Line ('  updated ' + $_.Name)
-        }
+    foreach ($sub in @('lib','UsbNetFix.ps1','UsbNetFix.cmd','README.md')) {
+        $src = Join-Path $From $sub
+        if (-not (Test-Path $src)) { continue }
+        $dst = Join-Path $root $sub
+        if (Test-Path $src -PathType Container) {
+            New-Item -ItemType Directory -Force -Path $dst | Out-Null
+            Copy-Item (Join-Path $src '*') $dst -Recurse -Force
+        } else { Copy-Item $src $dst -Force }
+        Line ('  updated ' + $sub)
     }
     if (Test-Path (Join-Path $From 'config.new.json')) {
         Copy-Item (Join-Path $From 'config.new.json') (Join-Path $root 'config.new.json') -Force
-        Line '  a new config.new.json was placed next to your config.json (compare, then merge)'
+        Line '  a new config.new.json was placed next to your config.json (compare, then merge by hand)'
     }
     Line ''
-    Invoke-Elevated -Script (Join-Path $root 'tasks.ps1') -Arguments @('-SourceDir', $root)
+    Invoke-Elevated -Script (Get-AppScript 'tasks.ps1') -Arguments @('-SourceDir', $root)
     Line ''
 }
 
@@ -268,11 +287,11 @@ function Show-Menu {
     Line '  2  names       which phone gets which name, and why'
     Line '  3  monitor     live tethering state + USB modes'
     Line '  4  apply       apply the fix right now'
-    Line '  5  install     deploy + register the scheduled task (needs admin)'
+    Line '  5  install     deploy + register scheduled tasks (needs admin)'
     Line '  6  diagnose    write a diagnostic snapshot (needs admin)'
     Line '  7  edit config open config.json in Notepad'
     Line '  8  open logs   open the log folder'
-    Line '  9  uninstall   remove the scheduled task'
+    Line '  9  uninstall   remove the scheduled tasks'
     Line '  0  exit'
     Line ''
     $c = Read-Host ' choose'

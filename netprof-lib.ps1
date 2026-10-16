@@ -2,7 +2,7 @@
 <#
   netprof-lib.ps1 -- shared layer of the USB tethering network-profile app (UsbNetFix)
   ===================================================================================
-  Part of UsbNetFix.  Lives next to the other scripts; they dot-source it.
+  Part of UsbNetFix.  Lives in the app folder; every other script dot-sources it.
 
   AUTHORITATIVE STRUCTURE OF THE SAVED-NETWORK DATABASE (verified: Windows 11 22631)
 
@@ -26,9 +26,9 @@
     2. during a live session the gateway MAC (ARP) of that adapter is recorded -
        this is what Windows used as the network fingerprint
     3. the phone MODEL is resolved from the USB device itself: while connected in
-       MTP mode Android reports its marketing name and Windows keeps that record in the
-       USB enumeration tree; the USB serial number of the shared parent device links the
-       RNDIS adapter back to that record
+       MTP mode Android reports its marketing name (e.g. "Galaxy S24") and Windows
+       keeps that record in the USB enumeration tree; the USB serial number links the
+       RNDIS adapter back to that record.
     A profile is only ever touched when its gateway MAC was confirmed this way.
 
   ASCII only (Windows PowerShell 5.1 decodes BOM-less .ps1 as ANSI).
@@ -39,24 +39,22 @@ $script:NLProfiles = "$($script:NLBase)\Profiles"
 $script:NLSigs     = @("$($script:NLBase)\Signatures\Unmanaged", "$($script:NLBase)\Signatures\Managed")
 
 # --------------------------------------------------------------------------- paths
-# Layout (self contained, everything under one folder - the repo root is fine):
+# Layout of the app (self contained, everything under one folder):
 #
-#     <app folder>\
+#     <install dir>\
 #         UsbNetFix.cmd          double-click entry
 #         UsbNetFix.ps1          control panel / CLI
 #         config.json            user settings   (never overwritten by an upgrade)
-#         state.json             what the app learned (created at runtime)
+#         state.json             what the app learned
 #         README.md
-#         netprof-lib.ps1        this file
-#         usbnet-fix.ps1         the actual fixer (run by the scheduled task)
-#         tasks.ps1              task registration ("install"/"repair")
-#         uninstall.ps1
-#         diag-watcher.ps1
-#         log\                   run log + diagnostic snapshots (created at runtime)
-#         backup\                registry backups + previous versions (created at runtime)
-#
-# A "lib\" subfolder is also supported: any script may live in <app>\lib\ and everything
-# still resolves to the same app folder.
+#         lib\                   implementation
+#             netprof-lib.ps1    this file
+#             usbnet-fix.ps1     the fixer (run by the scheduled tasks)
+#             tasks.ps1          task registration ("install"/"repair")
+#             uninstall.ps1
+#             diag-watcher.ps1
+#         log\                   run log + diagnostic snapshots
+#         backup\                registry backups (.reg) + previous app versions
 function NP-LibDir {
     $here = $PSScriptRoot
     if (-not $here) { $here = Split-Path -Parent $MyInvocation.MyCommand.Path }
@@ -64,7 +62,7 @@ function NP-LibDir {
 }
 function NP-ToolDir {
     <#  app root = parent of lib\ when this file sits in a lib folder, else the folder
-        this file lives in.  #>
+        this file lives in (flat/legacy layout).  #>
     $lib = NP-LibDir
     if ($lib -and ((Split-Path -Leaf $lib) -ieq 'lib')) { return (Split-Path -Parent $lib) }
     return $lib
@@ -254,14 +252,11 @@ function NP-RemoveProfile {
 }
 
 function NP-ExportBackup {
-    <#  reg.exe export of the whole saved-network database into $Dir.
-        Never throws: returns the list of files it managed to write.  #>
     param([string]$Dir, [string]$Tag = 'networklist')
     $files = @()
     if (-not $Dir) { return $files }
     try { if (-not (Test-Path $Dir)) { New-Item -ItemType Directory -Force -Path $Dir | Out-Null } } catch { return $files }
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-    # reg.exe needs the full hive-qualified key name
     $pairs = @(
         @{ k = "HKLM\$($script:NLBase)\Profiles";   f = "Profiles-$Tag-$stamp.reg" },
         @{ k = "HKLM\$($script:NLBase)\Signatures"; f = "Signatures-$Tag-$stamp.reg" })
@@ -298,8 +293,8 @@ function NP-GetGatewayMac {
 function NP-GetUsbIds {
     <#  pull VID / PID / serial out of a PnP instance id.
         Instances look like:
-            USB\VID_1234&PID_5678&MI_00\6&1A2B3C&0&0000   <- interface, last segment is a PORT PATH
-            USB\VID_1234&PID_5678\SERIALNUMBER123         <- parent device, carries the serial
+            USB\VID_2D95&PID_600A&MI_00\6&835AB&0&0000     <- interface (last segment = port path)
+            USB\VID_2D95&PID_600A\SERIALNUMBER456          <- parent device, carries the serial
         The last segment of an interface instance is a PORT PATH that changes with the USB
         port and is shared by every phone plugged into that port, so it must never be used
         as device identity.  When given an interface instance this walks up to its parent
@@ -313,7 +308,7 @@ function NP-GetUsbIds {
     $parts = $InstanceId -split '\\'
     if ($parts.Count -lt 3) { return $r }
     $seg = $parts[2]
-    # a port path ("6&1A2B3C&0&0000") is not a serial: resolve the real parent first
+    # a port path ("6&835AB&0&0000") is not a serial: resolve the real parent first
     if ($seg -match '^[0-9A-Fa-f]&\w+&\d+&\d+$' -or $seg -match '^MI_') {
         $parent = NP-GetParentInstanceId -InstanceId $InstanceId
         $pp = $parent -split '\\'
@@ -331,8 +326,8 @@ function NP-GetParentInstanceId {
         LocationInformation, so the port path cannot identify a device - only the parent
         device instance (which carries the USB serial number) can.
 
-        Example: USB\VID_1234&PID_5678&MI_00\6&1A2B3C&0&0000
-              -> USB\VID_1234&PID_5678\SERIALNUMBER123
+        Example: USB\VID_2D95&PID_600A&MI_00\6&1EB7303F&1&0000
+              -> USB\VID_2D95&PID_600A\SERIALNUMBER123
         Falls back to syntactic reconstruction when the PnP API is unavailable.  #>
     param([string]$InstanceId)
     if (-not $InstanceId) { return '' }
@@ -363,6 +358,7 @@ function NP-GetInstanceIdForAdapter {
             if ([string]$p.NetCfgInstanceId -ne $guid) { continue }
             $ndi = Get-ItemProperty (Join-Path $k.PSPath 'Ndi') -ErrorAction SilentlyContinue
             if ($ndi -and $ndi.DeviceInstanceId) { return ([string]$ndi.DeviceInstanceId).ToUpper() }
+            # no Ndi record: search the USB tree for the device with this GUID as container
             foreach ($vid in (Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Enum\USB' -ErrorAction SilentlyContinue)) {
                 foreach ($inst in (Get-ChildItem $vid.PSPath -ErrorAction SilentlyContinue)) {
                     foreach ($iface in (Get-ChildItem $inst.PSPath -ErrorAction SilentlyContinue)) {
@@ -385,17 +381,17 @@ function NP-GetInstanceIdForAdapter {
 
 function NP-GetUsbDeviceModel {
     <#  Resolve the marketing name of the device behind a USB interface.
-        Android only reports its model name in MTP mode, and that record is a SIBLING
-        interface of the RNDIS one.  The link is the USB serial number of the shared
-        parent device:
+        Android only reports its model name in MTP mode (e.g. "Pixel 8"), and that
+        record is a SIBLING interface of the RNDIS one.  The link is the USB serial number
+        of the shared parent device:
 
-            RNDIS interface -> parent USB\VID_1234&PID_5678\SERIALNUMBER123
-            MTP   interface -> parent USB\VID_1234&PID_5679\SERIALNUMBER123  -> "Phone Model X"
+            RNDIS interface -> parent USB\VID_2D95&PID_600A\SERIALNUMBER123
+            MTP   interface -> parent USB\VID_2D95&PID_6012\SERIALNUMBER123   -> "Pixel 8"
 
         LocationInformation deliberately is NOT used as the primary key: two different
-        phones plugged into the same USB port share it, so it would name one phone after
-        the other.  It only serves as a weak last resort when the vendor exposes exactly
-        one named device.  #>
+        phones plugged into the same USB port share it (observed on this machine), so it
+        would name one phone after the other.  It only serves as a weak last resort when
+        the vendor exposes exactly one named device.  #>
     param([string]$InstanceId)
     $ids = NP-GetUsbIds -InstanceId $InstanceId
     if (-not $ids.Vid) { return '' }
@@ -534,7 +530,7 @@ function NP-ResolveDeviceName {
 function NP-GetState {
     <#  state.json:
         {
-          "Devices": [ { DeviceId, Name, Model, LastGatewayMac, LastSeen, Sessions } ],
+          "Devices": [ { DeviceId, Name, Model, LastGatewayMac, LastSeen } ],
           "PhoneGatewayMacs": [ ... ]        # every confirmed fingerprint (all phones)
           "GatewayMap": { "<mac>": "<DeviceId>" }
         }  #>
@@ -577,8 +573,9 @@ function NP-RecordPhoneSession {
 
         BOUNDED ON PURPOSE: Android hands out a fresh random gateway MAC on every tethering
         session, so an unbounded list would grow forever.  $MaxFingerprints keeps the most
-        recent ones.  An evicted MAC only costs a re-learn if that exact MAC ever comes
-        back, and the newest MAC of every device is always kept.  #>
+        recent ones (default 64 - plenty, since the newest MAC is always the live session).
+        An evicted MAC only costs a re-learn if that exact MAC ever comes back, and the
+        newest MAC of every device is always kept.  #>
     param(
         [string]$DeviceId,
         [string]$Name,
@@ -621,6 +618,7 @@ function NP-RecordPhoneSession {
     $macs = @($st.PhoneGatewayMacs)
     if ($mac -and ($macs -notcontains $mac)) { $macs += $mac }
     if ($macs.Count -gt $MaxFingerprints) {
+        $drop = $macs.Count - $MaxFingerprints
         $tail = @($macs[($macs.Count - $MaxFingerprints)..($macs.Count - 1)])
         # never evict a MAC that a current device still uses
         $macs = @($keepMacs + $tail | Where-Object { $_ } | Select-Object -Unique)
@@ -643,4 +641,19 @@ function NP-GetDeviceNames {
     $names = @()
     foreach ($d in $st.Devices) { if ($d.Name) { $names += [string]$d.Name } }
     return $names
+}
+
+# --------------------------------------------------------------------------- adb (optional)
+function NP-FindAdb {
+    $c = Get-Command adb -ErrorAction SilentlyContinue
+    if ($c) { return $c.Source }
+    foreach ($p in @(
+        (Join-Path $env:LOCALAPPDATA 'Android\Sdk\platform-tools\adb.exe'),
+        (Join-Path $env:USERPROFILE 'platform-tools\adb.exe'),
+        (Join-Path ${env:ProgramFiles} 'platform-tools\adb.exe'),
+        'C:\platform-tools\adb.exe',
+        'D:\platform-tools\adb.exe')) {
+        if ($p -and (Test-Path $p)) { return $p }
+    }
+    return ''
 }

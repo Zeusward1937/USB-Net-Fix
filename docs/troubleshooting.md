@@ -2,6 +2,16 @@
 
 ## 1. Usage questions
 
+### Double-clicking UsbNetFix.cmd raises a UAC prompt - is that normal?
+
+**Yes, by design.**
+
+The registry key `HKLM\...\NetworkList` is owned by SYSTEM, and its ACL grants access only to `BUILTIN\Administrators` and the `netprofm` service account. A **standard user cannot even read it**, so without elevation the control panel could only report "admin rights required" for almost everything.
+
+The launcher therefore requests elevation. If you decline the prompt it falls back to a normal run, where the informational commands still work.
+
+> Daily use needs **no interaction at all**: the background scheduled task runs as SYSTEM.
+
 ### The name did not change after plugging in the phone
 
 Check in order:
@@ -70,6 +80,12 @@ Writes a full snapshot into `log\` (devices, fingerprints, profile list, task st
 
 > ⚠️ **This file contains your phone model and USB serial number.** Check and redact it before posting publicly (e.g. in a GitHub issue).
 
+### It says netprof-lib.ps1 (or a similar file) cannot be found
+
+The program folder is **incomplete**. Copy the whole folder again.
+
+Both layouts are supported — **flat** (all `.ps1` files in one folder, which is what unpacking the release gives you) and a **`lib\` subfolder** — and the scripts detect which one they are in. But the files must all be present.
+
 ### The task exists but nothing happens
 
 Check that the task's action path really exists:
@@ -77,7 +93,7 @@ Check that the task's action path really exists:
 ```powershell
 $a = (Get-ScheduledTask -TaskName 'UsbNetFix-OnPhonePlug').Actions[0].Arguments
 $a
-Test-Path '<install dir>\lib\usbnet-fix.ps1'   # use the path from the output above
+Test-Path '<install dir>\usbnet-fix.ps1'   # use the path from the output above
 ```
 
 This bit during development: the task **was** triggered and **did** report success, but its `-File` pointed at a folder with no script in it, so nothing happened. The task registration now prints the actual runner path for this reason.
@@ -88,14 +104,24 @@ If the path is wrong: run `UsbNetFix.cmd` → choose `5`.
 
 ```powershell
 # elevated PowerShell, adjust the path to your install folder
-cd $env:UsbNetFixHome
-powershell -ExecutionPolicy Bypass -File .\lib\usbnet-fix.ps1 -Once
+cd <install dir>
+powershell -ExecutionPolicy Bypass -File .\usbnet-fix.ps1 -Once
 ```
 
 - `-Once` skips the 8 s settle wait and runs immediately
 - `-DryRun` reports what it would change and **changes nothing**
 - `-MergeOnly` only cleans leftovers of already-known phones
 - `-Loop` stays resident and polls (debugging only)
+
+> In a `lib\` layout the path is `.\lib\usbnet-fix.ps1`.
+
+### Self check
+
+```
+verify.bat
+```
+
+Runs seven checks: script syntax, ASCII purity, leftover personal data, absence of runtime data, `config.json` validity, **a real run of each entry point**, and a final sweep that also removes anything the tests created. Any failure is reported explicitly.
 
 ### Where are the logs?
 
@@ -132,6 +158,9 @@ These cost real debugging time; they are listed so nobody repeats them.
 | A per-minute polling task | 1440 runs/day, all pointless | USB / network-profile events plus a boot and a daily safety net |
 | Waiting 8 s before checking for a phone | wasted time on almost every run | pre-check first, exit immediately when there is nothing to do |
 | A verification script that runs the tool | the tool's log contains the phone's real model and serial | point test logs at a temp directory and rescan everything afterwards |
+| **Assuming a `lib\` layout only** | the flat release could not start at all: every command died with "netprof-lib.ps1 is not recognized" | detect the layout at runtime; the verifier now checks output, not just exit codes |
+| **A verifier that only checks exit codes** | that layout bug slipped through, because a failed command still exited 0 | check exit code AND expected output AND "command not found" text |
+| Chinese text inside a helper `.ps1` | the script fails to parse (`Unexpected token`) because 5.1 reads it as ANSI | keep helper scripts pure ASCII too |
 
 ### About encoding
 

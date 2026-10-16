@@ -1,15 +1,15 @@
 #requires -Version 5.1
 <#
-  uninstall.ps1 -- removes the UsbNetFix scheduled task.
-  ---------------------------------------------------------------------------
-    * stops + unregisters the task and kills running instances
-    * optionally removes the phone's leftover profiles (keeps one, backs up first)
-    * optionally deletes the app folder
+  uninstall.ps1 -- removes the USB tethering network-profile stabilizer.
+    * stops + unregisters the scheduled tasks and kills running watchers
+    * optionally removes leftover phone profiles from the saved-network list
+      (keeps one, writes a registry backup first)
+    * optionally deletes the whole tool folder
   ASCII only (Windows PowerShell 5.1 decodes BOM-less .ps1 as ANSI).
 #>
 [CmdletBinding()]
 param(
-    [switch]$Purge,          # also delete the app folder
+    [switch]$Purge,          # also delete the tool folder
     [switch]$CleanProfiles,  # also remove leftover phone profiles without asking
     [switch]$Yes
 )
@@ -34,12 +34,12 @@ $here = Split-Path -Parent $PSCommandPath
 $toolDir = NP-ToolDir
 
 Write-Host ''
-Write-Host '=== UsbNetFix - uninstall ==='
+Write-Host '=== USB tethering network-profile stabilizer - uninstall ==='
 Write-Host ''
 
-# ------------------------------------------------------------------ 1. task
-Write-Host '[1/4] Scheduled task'
-foreach ($t in @('UsbNetFix-OnPhonePlug','UsbNetFix-Poll','UsbNetFix-OnConnect','UsbNetFix-Watcher','UsbNetFix-Watchdog')) {
+# ------------------------------------------------------------------ 1. tasks
+Write-Host '[1/4] Scheduled tasks'
+foreach ($t in @('UsbNetFix-Poll','UsbNetFix-OnConnect','UsbNetFix-Watcher','UsbNetFix-Watchdog')) {
     if (Get-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue) {
         Stop-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue
         Unregister-ScheduledTask -TaskName $t -Confirm:$false -ErrorAction SilentlyContinue
@@ -48,7 +48,7 @@ foreach ($t in @('UsbNetFix-OnPhonePlug','UsbNetFix-Poll','UsbNetFix-OnConnect',
 }
 
 # ------------------------------------------------------------------ 2. processes
-Write-Host '[2/4] Running instances'
+Write-Host '[2/4] Running watchers'
 $killed = 0
 Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" -ErrorAction SilentlyContinue | ForEach-Object {
     if ($_.CommandLine -and $_.CommandLine -match 'usbnet-fix\.ps1') {
@@ -67,7 +67,7 @@ if ($state.PhoneGatewayMacs.Count -gt 0) {
 if ($phone.Count -le 1) {
     Write-Host '      nothing to clean'
 } else {
-    Write-Host ('      found ' + $phone.Count + ' profiles that came from a phone:')
+    Write-Host ('      found ' + $phone.Count + ' profiles that came from the phone:')
     foreach ($p in $phone) { Write-Host ('        - ' + $p.Name + '   ' + (NP-MacPretty $p.GatewayMac)) }
     $doIt = $CleanProfiles
     if (-not $doIt -and -not $Yes) {
@@ -86,13 +86,30 @@ if ($phone.Count -le 1) {
 }
 
 # ------------------------------------------------------------------ 4. folder
-Write-Host '[4/4] App folder'
+Write-Host '[4/4] Folders'
 if ($Purge) {
     Remove-Item $toolDir -Recurse -Force -ErrorAction SilentlyContinue
     Write-Host ('      removed ' + $toolDir)
 } else {
     Write-Host ('      kept ' + $toolDir + '  (registry backups are in ' + (Join-Path $toolDir 'backup') + ')')
     Write-Host '      run with -Purge to delete it as well'
+}
+# the previous install location, if this app was migrated out of ProgramData
+$legacy = Join-Path $env:ProgramData 'UsbNetFix'
+if ((Test-Path $legacy) -and ($legacy -ne $toolDir)) {
+    Write-Host ('      old install found: ' + $legacy)
+    $rm = $false
+    if ($Purge) { $rm = $true }
+    else {
+        $a = Read-Host '      Delete the old folder too? (y/N)'
+        $rm = ($a -eq 'y' -or $a -eq 'Y')
+    }
+    if ($rm) {
+        Remove-Item $legacy -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host '      old folder removed'
+    } else {
+        Write-Host '      old folder kept'
+    }
 }
 
 Write-Host ''

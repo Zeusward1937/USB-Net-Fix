@@ -2,9 +2,9 @@
 <#
   usbnet-fix.ps1 -- keeps USB-tethering network profiles named after the phone
   ===================================================================================
-  Part of UsbNetFix (see README.md).  One-shot by default: the scheduled task runs it on
-  USB / network-profile events; it evaluates the current state, fixes the name/category
-  and exits.  -Loop keeps it resident instead (handy while debugging).
+  Part of UsbNetFix (see README.md).  One-shot by default: the scheduled task runs it
+  every minute and on every Windows "network profile" event; it evaluates the current
+  state, fixes the name/category and exits.  -Loop keeps it resident instead.
 
   WHAT IT DOES, PER PHONE
     Windows fingerprints a network by the default-gateway MAC.  Android re-randomizes
@@ -13,15 +13,16 @@
       1. finds the RNDIS/USB-tethering adapter
       2. confirms the session's gateway MAC (ARP) - never guesses
       3. works out WHICH phone it is: USB vendor id + USB serial number, plus the
-         marketing name Android reports, read from the USB enumeration tree
+         marketing name Android reports (e.g. "Galaxy S24"), read from the USB
+         enumeration tree
       4. picks the profile name: config deviceRules -> name learned earlier -> the
          phone's own model name -> DefaultName   (never "Network N")
-      5. renames the fresh profile, sets the network category, and removes that phone's
+      5. renames the fresh profile, sets the network category, and removes the phone's
          own leftovers from previous sessions so the list never grows
 
   USAGE
-    (no switch)   one-shot run  (what the scheduled task uses)
-    -Once         same, but skips the settle wait (manual "apply now")
+    (no switch)   one-shot poll  (what the scheduled tasks use)
+    -Once         same, but skips the settle delay (manual "apply now")
     -DryRun       print what would change, change nothing
     -MergeOnly    only clean up leftovers of already-known phones
     -Loop         stay resident and poll
@@ -53,7 +54,7 @@ function Get-Cfg {
     $p = $Obj.PSObject.Properties[$Name]
     if ($null -eq $p -or $null -eq $p.Value) { return $Default }
     # an empty/blank string means "not configured" - otherwise a blank LogFile would
-    # switch logging off silently
+    # switch logging off silently (that bug cost an hour of debugging)
     if ($p.Value -is [string] -and -not $p.Value.Trim()) { return $Default }
     return $p.Value
 }
@@ -71,11 +72,9 @@ function Get-Defaults {
         MergeDuplicateProfiles = $true
         ForgetLegacyProfiles   = $true
         VendorIds              = @('2D95','18D1','2717','22D9','04E8','12D1','0BB4','1004','05C6','2A70','0E8D','0FCE','2916','19D2')
-        DescriptionPatterns    = @('Remote NDIS','RNDIS','Android','USB.*Ethernet')
-        LogFile                = ''      # empty = <app folder>\log\usbnet-fix.log
+        DescriptionPatterns    = @('Remote NDIS','RNDIS','Android','iQOO','vivo','USB.*Ethernet')
+        LogFile                = (Join-Path (NP-ToolDir) 'log\usbnet-fix.log')
         LogMaxKB               = 768
-        LogKeepDiagFiles       = 20
-        LogKeepDiagDays        = 30
         Verbose                = $false
     }
 }
@@ -102,22 +101,19 @@ if (-not $ConfigPath) {
     }
 }
 $script:Cfg     = Load-Config -Path $ConfigPath
-# resolve the log path in ONE place: explicit setting, else <app folder>\log\usbnet-fix.log
-$script:LogFile = [string](Get-Cfg $script:Cfg 'LogFile' '')
-if (-not $script:LogFile) { $script:LogFile = Join-Path (NP-LogDir) 'usbnet-fix.log' }
+$script:LogFile = [string](Get-Cfg $script:Cfg 'LogFile' (Join-Path (NP-ToolDir) 'log\usbnet-fix.log'))
 $script:DebugOn = [bool](Get-Cfg $script:Cfg 'Verbose' $false)
 if ($PollSeconds -le 0) { $PollSeconds = [int](Get-Cfg $script:Cfg 'PollSeconds' 3) }
 if ($PollSeconds -lt 1) { $PollSeconds = 3 }
 
 $script:LogWriteErrorShown = $false
 $script:LogFallback = Join-Path $env:ProgramData 'UsbNetFix\log\usbnet-fix.log'
+$script:LogTargetNote = ''
 function Write-Log {
     param([string]$Message, [string]$Level = 'INFO')
     $line = '{0} [{1}] {2}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Level, $Message
     if (-not $Quiet) { Write-Host $line }
 
-    # preferred location first, then a fallback that SYSTEM can always write.
-    # Whichever works is remembered for the rest of the run.
     $targets = @()
     if ($script:LogFile) { $targets += $script:LogFile }
     if ($script:LogFallback -and ($script:LogFallback -ne $script:LogFile)) { $targets += $script:LogFallback }
@@ -128,9 +124,11 @@ function Write-Log {
             if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir -ErrorAction Stop | Out-Null }
             $enc = New-Object System.Text.UTF8Encoding($false)
             [System.IO.File]::AppendAllText($target, ($line + [Environment]::NewLine), $enc)
-            if ($target -ne $script:LogFile -and -not $script:LogWriteErrorShown) {
-                $script:LogWriteErrorShown = $true
-                if (-not $Quiet) { Write-Host ('[WARN] log fallback active: "' + $script:LogFile + '" is not writable, using "' + $target + '"') }
+            if (-not $script:LogTargetNote) {
+                $script:LogTargetNote = $target
+                if ($target -ne $script:LogFile -and -not $Quiet) {
+                    Write-Host ('[WARN] log fallback active: "' + $script:LogFile + '" is not writable, using "' + $target + '"')
+                }
             }
             return
         } catch { }
@@ -250,7 +248,7 @@ function Invoke-PhoneFix {
                 $onlineGuids += $guid
 
                 # ---------------------------------------------------------------- fast path
-                # The everyday case is an event in the middle of an unchanged tethering
+                # The everyday case is a poll in the middle of an unchanged tethering
                 # session: fingerprint already confirmed and the name already right.  Then
                 # the whole USB device identification (PnP + registry walk) is pointless -
                 # it would only re-derive the name we already have in state.json.
@@ -260,6 +258,7 @@ function Invoke-PhoneFix {
                         Write-DebugLog ('fast path: session ' + (NP-MacPretty $gw) + " already named '" + $name + "'")
                         $touchedNames += $name
                         if ($wantCat -ge 0 -and [int]$lp.NetworkCategory -ne $wantCat) {
+                            $p2 = $all | Where-Object { $_.Guid -eq $guid } | Select-Object -First 1
                             if (NP-SetProfileCategory -Guid $guid -Category $wantCat -PlanOnly:$PlanOnly) {
                                 Write-Log ('category -> ' + $cat + " on '" + $name + "'") 'FIX'
                                 $changes++
@@ -332,37 +331,38 @@ function Invoke-PhoneFix {
             # could remove a profile that is currently connected - so we do not.
             Write-DebugLog 'merge skipped: no online profile was identified, cannot tell which entry is in use'
         } else {
-            $state = NP-GetState
-            if ($state.PhoneGatewayMacs.Count -gt 0) {
-                $all = NP-GetProfiles
-                $phone = @($all | Where-Object { $state.PhoneGatewayMacs -contains $_.GatewayMac })
-                if ($phone.Count -gt 0) {
-                    $byName = @{}
-                    foreach ($p in $phone) {
-                        if (-not $p.Name) { continue }
-                        if (-not $byName.ContainsKey($p.Name)) { $byName[$p.Name] = @() }
-                        $byName[$p.Name] += $p
-                    }
-                    foreach ($n in $byName.Keys) {
-                        $group = @($byName[$n] | Sort-Object { if ($_.Created) { $_.Created } else { [datetime]::MinValue } } -Descending)
-                        if ($group.Count -le 1) { continue }
-                        $keep = $group[0]
-                        $isCurrentPhone = ($touchedNames -contains $n)
-                        foreach ($p in $group) {
-                            if ($p.Guid -eq $keep.Guid) { continue }
-                            # never delete the profile that is online right now, whatever
-                            # else happens - that is a hard safety rule
-                            if ($onlineGuids -contains $p.Guid) { Write-DebugLog ('keeping online profile ' + $p.Name); continue }
-                            if ($isCurrentPhone -or [bool](Get-Cfg $script:Cfg 'ForgetLegacyProfiles' $true)) {
-                                if (NP-RemoveProfile -Guid $p.Guid -PlanOnly:$PlanOnly) {
-                                    Write-Log ("forget leftover profile '" + $p.Name + "' (" + $p.Guid + ')') 'FIX'
-                                    $changes++
-                                }
+        $state = NP-GetState
+        if ($state.PhoneGatewayMacs.Count -gt 0) {
+            $all = NP-GetProfiles
+            $phone = @($all | Where-Object { $state.PhoneGatewayMacs -contains $_.GatewayMac })
+            if ($phone.Count -gt 0) {
+                # name -> profiles, so leftovers of the same phone can be folded
+                $byName = @{}
+                foreach ($p in $phone) {
+                    if (-not $p.Name) { continue }
+                    if (-not $byName.ContainsKey($p.Name)) { $byName[$p.Name] = @() }
+                    $byName[$p.Name] += $p
+                }
+                foreach ($n in $byName.Keys) {
+                    $group = @($byName[$n] | Sort-Object { if ($_.Created) { $_.Created } else { [datetime]::MinValue } } -Descending)
+                    if ($group.Count -le 1) { continue }
+                    $keep = $group[0]
+                    $isCurrentPhone = ($touchedNames -contains $n)
+                    foreach ($p in $group) {
+                        if ($p.Guid -eq $keep.Guid) { continue }
+                        # never delete the profile that is online right now, whatever else
+                        # happens - that is a hard safety rule
+                        if ($onlineGuids -contains $p.Guid) { Write-DebugLog ('keeping online profile ' + $p.Name); continue }
+                        if ($isCurrentPhone -or [bool](Get-Cfg $script:Cfg 'ForgetLegacyProfiles' $true)) {
+                            if (NP-RemoveProfile -Guid $p.Guid -PlanOnly:$PlanOnly) {
+                                Write-Log ("forget leftover profile '" + $p.Name + "' (" + $p.Guid + ')') 'FIX'
+                                $changes++
                             }
                         }
                     }
                 }
             }
+        }
         }
     }
     return $changes
@@ -392,9 +392,9 @@ if (-not $Loop) {
     Rotate-Log
     if (-not (Test-SingleInstance)) { return }
 
-    # Cheap pre-check BEFORE the settle wait.  There is no point in waiting 8 seconds and
+    # Cheap pre-check BEFORE the settle wait.  There is no point in sleeping 8 seconds and
     # then discovering that no phone is attached: that is the state the machine is in for
-    # most runs, so the wait is skipped entirely when there is nothing to fix.
+    # most runs of the day, so the wait is skipped entirely when there is nothing to fix.
     $preAdapters = @()
     if (-not $MergeOnly) {
         $preAdapters = Get-PhoneAdapters
@@ -406,7 +406,7 @@ if (-not $Loop) {
 
     $delay = [int](Get-Cfg $script:Cfg 'SettleSeconds' 8)
     if ($Once) { $delay = 0 }
-    Write-Log ('run (DryRun=' + [bool]$DryRun + ' MergeOnly=' + [bool]$MergeOnly + ' delay=' + $delay + 's) config=' + $ConfigPath)
+    Write-Log ('poll (DryRun=' + [bool]$DryRun + ' MergeOnly=' + [bool]$MergeOnly + ' delay=' + $delay + 's) config=' + $ConfigPath)
     if ($delay -gt 0) { Start-Sleep -Seconds $delay }
 
     # Second gate.  The adapter is there but Windows may not have assigned the network
@@ -439,7 +439,8 @@ $settle = [int](Get-Cfg $script:Cfg 'SettleSeconds' 8)
 if (-not (Test-SingleInstance)) { return }
 Write-Log ('resident watcher started (poll ' + $PollSeconds + 's) config=' + $ConfigPath)
 
-$script:WasUp = $false
+$script:WasUp    = $false
+$script:DoneKeys = @{}
 try {
     while ($true) {
         try {
@@ -449,6 +450,7 @@ try {
                 if ($script:WasUp) {
                     Write-Log 'phone adapter disconnected'
                     $script:WasUp = $false
+                    $script:DoneKeys = @{}
                 }
                 Start-Sleep -Seconds $PollSeconds
                 continue

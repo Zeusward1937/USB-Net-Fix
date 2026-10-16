@@ -59,6 +59,23 @@ Restore with `reg import`.
 
 Task settings: `WakeToRun=false` so the machine is never woken from sleep, `ExecutionTimeLimit=PT5M` so it cannot hang, and the battery restrictions are disabled so laptops work normally on battery.
 
+### About permissions
+
+The registry key `HKLM\...\NetworkList` is owned by **SYSTEM** and its ACL contains exactly two rules:
+
+```
+Allow  BUILTIN\Administrators    FullControl
+Allow  NT SERVICE\netprofm       SetValue, CreateSubKey, ReadKey
+```
+
+In other words a **standard user cannot even read it**.
+
+Consequences:
+
+- double-clicking `UsbNetFix.cmd` requests administrator rights on purpose — that is not a gratuitous prompt
+- if the UAC prompt is declined, the launcher falls back to a normal run: informational commands still work, and anything that reads the saved-network database says clearly that admin rights are needed
+- the background scheduled task runs as SYSTEM and is **not** affected, so daily use needs no interaction at all
+
 ---
 
 ## 2. Verification record
@@ -73,7 +90,11 @@ Task settings: `WakeToRun=false` so the machine is never woken from sleep, `Exec
 | Corrupted name self-heals | ✅ renamed to `Network 99`, corrected on the next run |
 | `state.json` boundedness | ✅ stays at the cap after simulating 100 sessions |
 | Cost with no phone attached | ✅ 0.52 s, no log lines |
-| Run without administrator rights | ✅ prints a clear message, does not crash |
+| Run without administrator rights | ✅ clear message, no crash |
+| First run on a brand-new machine | ✅ starts with no `state.json` and no `log\` at all |
+| Damaged config files | ✅ invalid JSON in `config.json` / `state.json` does not crash it |
+| Paths with spaces and non-ASCII | ✅ install folder with spaces and Chinese characters works |
+| Both folder layouts | ✅ flat and `lib\` layouts both run |
 
 ### Reboot reliability
 
@@ -147,7 +168,7 @@ Remove-Item (Join-Path $env:UsbNetFixHome) -Recurse -Force
 
 ## 4. Boundaries worth knowing
 
-1. **Administrator rights are required**, because the saved-network database is under `HKLM`. The scheduled task runs as SYSTEM for that reason.
+1. **Administrator rights are required**, because the saved-network database is under `HKLM` and owned by SYSTEM. The scheduled task runs as SYSTEM for that reason.
 
 2. **It edits Windows' own database**, which is different from "registry cleaner" tools: changes are strictly limited to the `NetworkList\Profiles` and `NetworkList\Signatures` keys.
 

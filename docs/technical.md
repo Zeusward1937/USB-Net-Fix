@@ -132,24 +132,32 @@ Before the change: a per-minute polling task — **1440 runs/day**, about 12 s o
 
 ---
 
-## 4. Files and state
+## 4. Both folder layouts are supported
+
+The program does not depend on a fixed layout. Both of these work:
 
 ```
-<install dir>\
-    UsbNetFix.cmd          double-click entry
-    UsbNetFix.ps1          control panel / CLI
-    usbnet-fix.ps1         the fixer (this is what the task runs)
-    netprof-lib.ps1        registry + device-identity layer
-    tasks.ps1              task registration
-    deploy.ps1             one-way deploy
-    uninstall.ps1          uninstall
-    diag-watcher.ps1       read-only diagnostics
-    verify-release.ps1     self check
-    config.json            your settings (never overwritten by an upgrade)
-    state.json             learned devices + confirmed fingerprints (runtime)
-    log\                   run log + diagnostic snapshots
-    backup\                registry backups + previous versions
+flat layout (what you get by unpacking the release)
+    <install dir>\
+        UsbNetFix.cmd / .ps1
+        usbnet-fix.ps1
+        netprof-lib.ps1
+        ...
+        config.json
+        state.json         <- created at runtime
+        log\  backup\      <- created at runtime
+
+lib layout (what deploy.ps1 produces)
+    <install dir>\
+        UsbNetFix.cmd / .ps1
+        config.json
+        lib\
+            usbnet-fix.ps1
+            netprof-lib.ps1
+            ...
 ```
+
+The scripts detect at runtime which layout they are in and locate their companions accordingly. The folder can live anywhere and be named anything — paths containing spaces or non-ASCII characters have been verified too.
 
 ### `state.json` is bounded on purpose
 
